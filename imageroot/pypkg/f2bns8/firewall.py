@@ -3,6 +3,7 @@
 import fcntl
 import hashlib
 import ipaddress
+import os
 import subprocess
 from .common import address, state_dir
 
@@ -42,3 +43,8 @@ def apply(module, addresses):
 
 def remove(module):
     subprocess.run(["nft", "delete", "table", "inet", table_name(module)], capture_output=True, check=False)
+
+
+if __name__ == "__main__":
+    from .node import Node
+    apply(os.environ["MODULE_ID"], [ban["ip"] for ban in Node(state_dir() / "node.sqlite3").bans()])

@@ -113,8 +113,8 @@ replaced database or a rollback relative to a peer: recover the latest coordinat
 backup instead of silently dropping newer bans.
 
 Recovery from an external firewall table deletion happens within 15 seconds.
-The periodic reconciliation does not make bans expire. During host boot there is
-a short interval before services restore the cached firewall state. Transparent
+The periodic reconciliation does not make bans expire. A separate boot service
+restores cached bans before `network-pre.target`. Transparent
 layer-2 bridge switching or traffic offloaded completely outside host netfilter
 is outside the host `inet` hooks; normal NS8 host/routed container traffic uses
 these hooks. Kernel-level namespace tests exercise both IP families and all
