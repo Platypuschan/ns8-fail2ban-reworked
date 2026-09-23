@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+ui/node_modules/
+ui/dist/
+ui/.yarn/
+ui/.pnp.*
+.build/
+.test-state/

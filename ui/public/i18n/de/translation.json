@@ -1,0 +1,80 @@
+{
+  "settings": {
+    "title": "Einstellungen"
+  },
+  "status": {
+    "title": "Diagnose"
+  },
+  "about": {
+    "title": "Informationen"
+  },
+  "action": {
+    "get-name": "Read module name"
+  },
+  "task": {
+    "cannot_create_task": "Cannot create task: {action}"
+  },
+  "f": {
+    "intro": "Eine gemeinsame Sperrliste und Whitelist. Sperren gelten dauerhaft für den gesamten IPv4-/IPv6-Verkehr zu und von der Adresse auf allen verbundenen NS8-Knoten.",
+    "protection": "Schutz",
+    "discovery": "Das Modul erkennt SSH, die NS8-Admin-Anmeldung und installierte Gitea-, Organizr- und Samba-Instanzen. Ein Jail liest das Anmeldelog seiner Anwendung und ermittelt die Client-IP. Jede Sperre gilt für alle Ports und Protokolle einschließlich weitergeleitetem Verkehr. Neue Anwendungen werden jede Minute erkannt.",
+    "threshold": "Nach 5 passenden fehlgeschlagenen Anmeldungen innerhalb von 10 Minuten in einem Jail wird die IP dauerhaft gesperrt. Samba-Anmeldefehler werden automatisch protokolliert, ohne Samba neu zu starten.",
+    "ready": "Bereit",
+    "attention": "Prüfung erforderlich",
+    "afterSetup": "Die Logquellen erscheinen nach der Einrichtung der Synchronisation.",
+    "synchronization": "Synchronisation",
+    "shared": "Ein NS8-Modul übernimmt den Koordinator. Weitere NS8-Module verbinden sich über dessen HTTPS-URL und Verbindungstoken. Der Koordinator verwendet automatisch dieselbe Datenbank.",
+    "mode": "Modus",
+    "coordinator": "Koordinator bereitstellen",
+    "peer": "Mit Koordinator verbinden",
+    "database": "Koordinator-Datenbank",
+    "databaseHelp": "Die SQLite-Datenbank ist im Modul enthalten und wird automatisch verwaltet. Über HTTPS ist ausschließlich der Synchronisationsdienst erreichbar.",
+    "publicUrl": "Öffentliche HTTPS-URL",
+    "proxyHelp": "Der DNS-Name muss auf diesen NS8-Knoten zeigen. NS8 Traefik übernimmt HTTPS und das Zertifikat automatisch.",
+    "showToken": "Verbindungstoken anzeigen",
+    "syncToken": "Verbindungstoken",
+    "coordinatorUrl": "HTTPS-URL des Koordinators",
+    "keepSecret": "Leer lassen, um das gespeicherte Token beizubehalten.",
+    "notifications": "Benachrichtigungen",
+    "notifyHelp": "ntfy meldet neue Sperren, die durch fehlgeschlagene Anmeldungen auf diesem Knoten ausgelöst wurden. Die Nachricht enthält Datum, Uhrzeit, Jail, Knoten/Modul und die zugehörigen Logzeilen. Synchronisierte Sperren erzeugen keine Nachricht.",
+    "enableNotifications": "ntfy-Benachrichtigungen aktivieren",
+    "enabled": "Aktiviert",
+    "disabled": "Deaktiviert",
+    "serverUrl": "Server-URL",
+    "topic": "Topic",
+    "token": "Token (optional)",
+    "clearToken": "Gespeichertes Token entfernen",
+    "saveSettings": "Einstellungen speichern",
+    "whitelist": "Whitelist",
+    "whitelistHelp": "Eine IP, ein CIDR-Netz oder ein IP-Bereich von–bis pro Zeile. Gespeicherte Einträge gelten auf allen verbundenen Knoten und entfernen passende Sperren. Hier gegebenenfalls vertrauenswürdige Verwaltungs-, Proxy- und Knotenadressen eintragen.",
+    "ranges": "Adressen und Bereiche",
+    "saveWhitelist": "Whitelist speichern",
+    "blocked": "Gesperrte Adressen",
+    "unban": "Ausgewählte entsperren",
+    "refresh": "Aktualisieren",
+    "search": "Adresse suchen",
+    "selectAll": "Alle angezeigten Adressen auswählen",
+    "since": "Gesperrt seit",
+    "detectedBy": "Erkannt durch",
+    "noBans": "Keine passenden gesperrten Adressen.",
+    "saved": "Gespeichert",
+    "unbanned": "Ausgewählte Adressen entsperrt",
+    "error": "Aktion fehlgeschlagen",
+    "timeout": "Die Aufgabe läuft noch oder hat das Zeitlimit erreicht. Seite aktualisieren, um das Ergebnis zu prüfen.",
+    "taskError": "Die Aufgabe ist fehlgeschlagen. Die genaue Fehlermeldung steht in den NS8-Aufgabendetails.",
+    "diagnosticsHelp": "Verbindung, Firewall, Erkennung und Benachrichtigungen werden getrennt geprüft. Ist der Koordinator nicht erreichbar, bleiben bestehende Sperren aktiv. Neue lokale Sperren werden bis zur Synchronisation zwischengespeichert.",
+    "revision": "Version der gemeinsamen Liste",
+    "pendingBans": "Noch zu synchronisierende Sperren",
+    "pendingNotifications": "Noch zu versendende Benachrichtigungen",
+    "component": "Komponente",
+    "state": "Zustand",
+    "details": "Details",
+    "sync_status": "Synchronisation",
+    "firewall_status": "Firewall",
+    "engine_status": "Fail2ban",
+    "collector_status": "Logsammlung",
+    "notification_status": "ntfy",
+    "constraints": "Anwendungen protokollieren fehlgeschlagene Anmeldungen unterschiedlich. Die Parser sind nötig, um den Anmeldefehler und seine tatsächliche Client-IP zu erkennen. Sie beschränken nicht den gesperrten Verkehr. Verbirgt ein Proxy oder NAT die ursprüngliche IP, kann die Host-Firewall nur die in den Paketen sichtbare Adresse sperren. Fehlende oder inkompatible Logs erscheinen in der Diagnose.",
+    "documentation": "Dokumentation und Quellcode"
+  }
+}

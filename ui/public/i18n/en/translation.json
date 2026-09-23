@@ -1,0 +1,80 @@
+{
+  "settings": {
+    "title": "Settings"
+  },
+  "status": {
+    "title": "Diagnostics"
+  },
+  "about": {
+    "title": "About"
+  },
+  "action": {
+    "get-name": "Read module name"
+  },
+  "task": {
+    "cannot_create_task": "Cannot create task: {action}"
+  },
+  "f": {
+    "intro": "One shared ban list and whitelist. Bans are permanent and block all IPv4/IPv6 traffic to and from the address, on every connected NS8 node.",
+    "protection": "Protection",
+    "discovery": "The module discovers SSH, the NS8 admin login and installed Gitea, Organizr and Samba instances. A jail reads the login log for its application and identifies the client IP. Every ban applies to all ports and protocols, including forwarded traffic. New applications are checked every minute.",
+    "threshold": "A ban is triggered after 5 matching failed logins within 10 minutes in a jail. It never expires. Samba authentication failure logging is enabled automatically without restarting Samba.",
+    "ready": "Ready",
+    "attention": "Needs attention",
+    "afterSetup": "Detection sources appear after synchronization is configured.",
+    "synchronization": "Synchronization",
+    "shared": "Choose one NS8 module as coordinator. Connect the other NS8 modules to its HTTPS URL with the connection token. The coordinator itself automatically uses the same database.",
+    "mode": "Mode",
+    "coordinator": "Provide the coordinator",
+    "peer": "Connect to the coordinator",
+    "database": "Coordinator database",
+    "databaseHelp": "The SQLite database is included and managed by the module. Only its synchronization service is accessible through HTTPS.",
+    "publicUrl": "Public HTTPS URL",
+    "proxyHelp": "Point this DNS name to this NS8 node. NS8 Traefik handles HTTPS and the certificate automatically.",
+    "showToken": "Show connection token",
+    "syncToken": "Connection token",
+    "coordinatorUrl": "Coordinator HTTPS URL",
+    "keepSecret": "Leave blank to keep the saved token.",
+    "notifications": "Notifications",
+    "notifyHelp": "Send an ntfy message for a new ban triggered by failed logins on this node. It contains the date, time, jail, node/module and matching log lines. Synchronized bans do not send notifications.",
+    "enableNotifications": "Enable ntfy notifications",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "serverUrl": "Server URL",
+    "topic": "Topic",
+    "token": "Token (optional)",
+    "clearToken": "Remove the saved token",
+    "saveSettings": "Save settings",
+    "whitelist": "Whitelist",
+    "whitelistHelp": "One address, CIDR network or start–end IP range per line. Saved entries apply on all connected nodes and remove matching bans. Include trusted management, proxy and inter-node addresses here when needed.",
+    "ranges": "Addresses and ranges",
+    "saveWhitelist": "Save whitelist",
+    "blocked": "Blocked addresses",
+    "unban": "Unblock selected",
+    "refresh": "Refresh",
+    "search": "Find an address",
+    "selectAll": "Select all visible addresses",
+    "since": "Blocked since",
+    "detectedBy": "Detected by",
+    "noBans": "No matching blocked addresses.",
+    "saved": "Saved",
+    "unbanned": "Selected addresses unblocked",
+    "error": "Operation failed",
+    "timeout": "The task is still running or timed out. Refresh the page to check its result.",
+    "taskError": "The task failed. Check the task details in NS8 for the exact error.",
+    "diagnosticsHelp": "Connectivity, firewall enforcement, detection and notification delivery are checked separately. During a coordinator outage, existing bans remain active and new local bans wait for synchronization.",
+    "revision": "Shared state revision",
+    "pendingBans": "Bans waiting for synchronization",
+    "pendingNotifications": "Notifications waiting for delivery",
+    "component": "Component",
+    "state": "State",
+    "details": "Details",
+    "sync_status": "Synchronization",
+    "firewall_status": "Firewall",
+    "engine_status": "Fail2ban",
+    "collector_status": "Log collection",
+    "notification_status": "ntfy",
+    "constraints": "Applications write different authentication logs. These parsers are necessary to identify failed logins and their actual client address. They do not restrict which traffic is blocked. A proxy or NAT can hide the original IP: a host firewall can only block addresses visible in the packets. Missing or incompatible logs are reported in Diagnostics.",
+    "documentation": "Documentation and source code"
+  }
+}
