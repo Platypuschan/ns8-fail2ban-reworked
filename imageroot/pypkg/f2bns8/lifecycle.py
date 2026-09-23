@@ -7,7 +7,7 @@ import subprocess
 import uuid
 from .common import atomic_json, config, public_host, state_dir
 
-PARTS = ("coordinator", "worker", "collector", "notify", "engine")
+PARTS = ("coordinator", "worker", "collector", "notify", "engine", "firewall")
 
 
 def systemctl(*args, check=True):
@@ -52,6 +52,11 @@ def install():
             "StartLimitIntervalSec=0\n\n[Service]\nType=simple\nUMask=0077\n"
             "Restart=always\nRestartSec=3\nTimeoutStopSec=45\n"
             "ExecStart=" + start + "\n" + extra + "\n[Install]\nWantedBy=multi-user.target\n")
+        if part == "firewall":
+            unit = ("[Unit]\nDescription=Restore NS8 Fail2ban bans before networking\n"
+                "DefaultDependencies=no\nAfter=local-fs.target\nBefore=network-pre.target\nWants=network-pre.target\n"
+                "\n[Service]\nType=oneshot\nRemainAfterExit=yes\nUMask=0077\nExecStart=" + start
+                + "\n\n[Install]\nWantedBy=multi-user.target\n")
         Path("/etc/systemd/system", name).write_text(unit)
     systemctl("daemon-reload")
 
@@ -59,6 +64,8 @@ def install():
 def start(settings):
     module = os.environ["MODULE_ID"]
     install()
+    systemctl("enable", module + "-firewall.service")
+    systemctl("restart", module + "-firewall.service")
     if settings["mode"] == "coordinator":
         systemctl("enable", module + "-coordinator.service")
         systemctl("restart", module + "-coordinator.service")
