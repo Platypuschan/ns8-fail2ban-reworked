@@ -1,0 +1,6 @@
+FROM node:24.20.0-bookworm
+RUN corepack enable
+WORKDIR /app
+ENV NODE_OPTIONS=--openssl-legacy-provider
+EXPOSE 8080
+ENTRYPOINT ["./container-entrypoint.sh"]

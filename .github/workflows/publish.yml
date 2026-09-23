@@ -1,0 +1,37 @@
+name: Build installable NS8 images
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+  packages: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: corepack enable
+      - name: Build module and isolated engine
+        id: images
+        run: ./build-images.sh
+        env:
+          REPOBASE: ghcr.io/${{ github.repository_owner }}
+      - name: Log in to GHCR
+        run: printf '%s' "$REGISTRY_TOKEN" | buildah login --username "$GITHUB_ACTOR" --password-stdin ghcr.io
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish matching module and engine
+        run: |
+          buildah push "$ENGINE" "docker://$ENGINE"
+          buildah push "$MODULE" "docker://$MODULE:dev"
+          buildah push "$MODULE" "docker://$MODULE:sha-${GITHUB_SHA:0:12}"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            buildah push "$MODULE" "docker://$MODULE:${GITHUB_REF_NAME#v}"
+          fi
+        env:
+          ENGINE: ${{ steps.images.outputs.engine }}
+          MODULE: ${{ steps.images.outputs.module }}

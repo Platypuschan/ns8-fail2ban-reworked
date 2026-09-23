@@ -1,0 +1,6 @@
+FROM docker.io/library/python:3.12-slim-bookworm
+COPY fail2ban /opt/fail2ban
+COPY f2bns8 /opt/f2bns8
+COPY ns8_action.py control.py entrypoint.py /opt/
+ENV PYTHONPATH=/opt:/opt/fail2ban PYTHONDONTWRITEBYTECODE=1 F2B_STATE_DIR=/state
+ENTRYPOINT ["python3", "/opt/entrypoint.py"]

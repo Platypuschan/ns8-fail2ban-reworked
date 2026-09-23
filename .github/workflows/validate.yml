@@ -1,0 +1,49 @@
+name: Validate module
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get pinned upstream Fail2ban
+        uses: actions/checkout@v4
+        with:
+          repository: fail2ban/fail2ban
+          ref: f60978618a101427b06924fc932b44350fec2b63
+          path: .build/fail2ban
+      - name: Registry, parsers, HTTP API and real Fail2ban integration
+        env:
+          PYTHONPATH: imageroot/pypkg
+          FAIL2BAN_SOURCE: ${{ github.workspace }}/.build/fail2ban
+          REQUIRE_ENGINE_TEST: '1'
+        run: python3 -m unittest discover -s tests -v
+      - name: Real nftables enforcement in isolated network namespaces
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y nftables iproute2 iputils-ping
+          sudo env PYTHONPATH="$PWD/imageroot/pypkg" bash tests/test-firewall.sh
+  ui:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: corepack enable
+      - run: yarn install --immutable
+        working-directory: ui
+      - run: yarn exec eslint --ext .js,.vue src
+        working-directory: ui
+      - run: yarn build
+        working-directory: ui
+        env:
+          NODE_OPTIONS: --openssl-legacy-provider
+      - uses: actions/upload-artifact@v4
+        with:
+          name: module-ui
+          path: ui/dist

@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "mode",
+    "notifications"
+  ],
+  "properties": {
+    "mode": {
+      "enum": [
+        "coordinator",
+        "peer"
+      ]
+    },
+    "public_url": {
+      "type": "string"
+    },
+    "sync_url": {
+      "type": "string"
+    },
+    "sync_token": {
+      "type": "string"
+    },
+    "notifications": {
+      "type": "object",
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "url": {
+          "type": "string"
+        },
+        "topic": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        },
+        "clear_token": {
+          "type": "boolean"
+        },
+        "token_configured": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

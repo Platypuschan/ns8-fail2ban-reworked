@@ -1,0 +1,21 @@
+{
+  "name": "Fail2ban",
+  "description": {
+    "en": "Permanent bans and a shared whitelist for NethServer 8.",
+    "de": "Dauerhafte IP-Sperren und eine gemeinsame Whitelist f\u00fcr NethServer 8."
+  },
+  "categories": [
+    "security"
+  ],
+  "authors": [
+    {
+      "name": "Platypuschan"
+    }
+  ],
+  "docs": {
+    "documentation_url": "https://github.com/Platypuschan/ns8-fail2ban-reworked#readme",
+    "bug_url": "https://github.com/Platypuschan/ns8-fail2ban-reworked/issues",
+    "code_url": "https://github.com/Platypuschan/ns8-fail2ban-reworked"
+  },
+  "source": "ghcr.io/platypuschan/fail2ban-reworked"
+}
