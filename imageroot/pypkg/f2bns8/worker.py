@@ -5,7 +5,7 @@ import subprocess
 import threading
 import time
 from . import firewall
-from .common import config, now, state_dir
+from .common import config, networks, now, state_dir
 from .node import Node
 from .transport import call
 
@@ -47,7 +47,7 @@ def reconcile_engine(node):
         for ip in control(["get", jail, "banip"]):
             if ip not in wanted:
                 control(["set", jail, "unbanip", ip])
-        current = control(["get", jail, "ignoreip"])
+        current = networks(control(["get", jail, "ignoreip"]))
         desired = node.snapshot()["whitelist"]
         for ip in current:
             if ip not in desired:
