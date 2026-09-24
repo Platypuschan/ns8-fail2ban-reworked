@@ -46,7 +46,7 @@
     "clearToken": "Gespeichertes Token entfernen",
     "saveSettings": "Einstellungen speichern",
     "whitelist": "Whitelist",
-    "whitelistHelp": "Eine IP, ein CIDR-Netz oder ein IP-Bereich von–bis pro Zeile. Gespeicherte Einträge gelten auf allen verbundenen Knoten und entfernen passende Sperren. Hier gegebenenfalls vertrauenswürdige Verwaltungs-, Proxy- und Knotenadressen eintragen.",
+    "whitelistHelp": "Eine IP, ein CIDR-Netz oder ein IP-Bereich von–bis pro Zeile. Gespeicherte Einträge gelten auf allen verbundenen Knoten und entfernen passende Sperren. Hier gegebenenfalls vertrauenswürdige Verwaltungs-, Proxy- und Knotenadressen eintragen. Die lokalen Loopback-Netze bleiben immer geschützt.",
     "ranges": "Adressen und Bereiche",
     "saveWhitelist": "Whitelist speichern",
     "blocked": "Gesperrte Adressen",

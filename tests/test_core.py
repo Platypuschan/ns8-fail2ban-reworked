@@ -109,6 +109,13 @@ class RegistryTests(unittest.TestCase):
         self.assertIsNone(self.ban(self.b))
         self.assertIsNone(self.ban(self.b, "2001:db8::1"))
 
+    def test_loopback_can_never_be_removed_from_shared_whitelist(self):
+        state = self.registry.set_whitelist([], 0)
+        self.assertEqual(state["whitelist"], ["127.0.0.0/8", "::1/128"])
+        self.a.apply(state)
+        self.assertIsNone(self.ban(self.a, "127.0.0.2"))
+        self.assertIsNone(self.ban(self.a, "::1"))
+
     def test_add_then_remove_whitelist_does_not_resurrect_old_bans(self):
         self.ban(self.b)
         state = self.registry.set_whitelist(["198.51.100.0/24"], 0)

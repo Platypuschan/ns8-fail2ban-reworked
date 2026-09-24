@@ -46,7 +46,7 @@
     "clearToken": "Remove the saved token",
     "saveSettings": "Save settings",
     "whitelist": "Whitelist",
-    "whitelistHelp": "One address, CIDR network or start–end IP range per line. Saved entries apply on all connected nodes and remove matching bans. Include trusted management, proxy and inter-node addresses here when needed.",
+    "whitelistHelp": "One address, CIDR network or start–end IP range per line. Saved entries apply on all connected nodes and remove matching bans. Include trusted management, proxy and inter-node addresses here when needed. Local loopback networks always remain protected.",
     "ranges": "Addresses and ranges",
     "saveWhitelist": "Save whitelist",
     "blocked": "Blocked addresses",
