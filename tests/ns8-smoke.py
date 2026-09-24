@@ -7,7 +7,7 @@ import time
 import uuid
 
 from f2bns8.common import config, state_dir
-from f2bns8.firewall import table_name
+from f2bns8.collector import discover
 from f2bns8.lifecycle import PARTS
 from f2bns8.node import Node
 from f2bns8.transport import call
@@ -30,6 +30,15 @@ def wait_for(check, description, seconds=40):
             print("PASS:", description, flush=True)
             return
         time.sleep(1)
+    print("DIAGNOSTICS:", task("get-diagnostics"), flush=True)
+    print("SOURCES:", [{k: v for k, v in s.items() if k != "environment"} for s in discover()], flush=True)
+    for path in (state_dir() / "logs").glob("*.log"):
+        print(path.name, path.read_text()[-8000:], flush=True)
+    raw = subprocess.check_output(["journalctl", "--no-pager", "-o", "json", "--since=-2min"], text=True)
+    for line in raw.splitlines():
+        record = json.loads(line)
+        if "192.0.2.2" in str(record.get("MESSAGE", "")):
+            print("JOURNAL:", {k: record.get(k) for k in ("_UID", "_SYSTEMD_UNIT", "CONTAINER_NAME", "MESSAGE")}, flush=True)
     raise AssertionError("Timed out: " + description)
 
 

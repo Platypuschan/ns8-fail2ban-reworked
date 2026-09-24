@@ -21,6 +21,20 @@ def run_module(module, args, **kwargs):
 
 def discover():
     import agent
+    # Rootless container processes can journal under a subordinate UID, not
+    # their module's login UID. Match the same ownership ranges as NS8 Alloy.
+    subuids = {}
+    try:
+        for line in Path("/etc/subuid").read_text().splitlines():
+            try:
+                owner, start, count = line.split(":")
+                start, count = int(start), int(count)
+                if start > 0 and count > 0:
+                    subuids.setdefault(owner, []).append((start, start + count))
+            except ValueError:
+                continue
+    except FileNotFoundError:
+        pass
     found = []
     paths = list(Path("/home").glob("*/.config/state/environment"))
     paths += list(Path("/var/lib/nethserver").glob("*/state/environment"))
@@ -40,8 +54,24 @@ def discover():
                 uid = pwd.getpwnam(module).pw_uid
             except KeyError:
                 uid = 0
-            found.append({"module": module, "jail": kind, "uid": str(uid), "environment": env})
+            ranges = [(uid, uid + 1)]
+            if uid:
+                ranges += subuids.get(module, []) + subuids.get(str(uid), [])
+            found.append({"module": module, "jail": kind, "uid": str(uid),
+                "uid_ranges": ranges, "environment": env})
     return found
+
+
+def owns_record(source, record):
+    try:
+        uid = int(record.get("_UID", -1))
+    except (ValueError, TypeError):
+        return False
+    if not any(start <= uid < end for start, end in source["uid_ranges"]):
+        return False
+    if source["uid"] != "0":
+        return True
+    return record.get("CONTAINER_NAME", "").startswith(source["module"])
 
 
 def samba_logging(source):
@@ -130,9 +160,7 @@ class Collector:
             for source in self.sources:
                 if source["jail"] == "organizr":
                     continue
-                if record.get("_UID") == source["uid"] and (
-                    source["uid"] != "0" or record.get("CONTAINER_NAME", "").startswith(source["module"])
-                ):
+                if owns_record(source, record):
                     self.emit(source["jail"], source["module"], message, when)
         if record.get("__CURSOR"):
             self.checkpoint["cursor"] = record["__CURSOR"]
@@ -144,14 +172,27 @@ class Collector:
                 stat = path.stat()
                 key = str(stat.st_dev) + ":" + str(stat.st_ino)
                 saved = self.checkpoint["files"].get(key, 0)
+                discarding = self.checkpoint.setdefault("discarding", {})
                 if saved > stat.st_size:
                     saved = 0
+                    discarding.pop(key, None)
                 with path.open("rb") as stream:
                     stream.seek(saved)
                     for _ in range(1000):
                         offset = stream.tell()
                         line = stream.readline(65537)
-                        if not line or not line.endswith(b"\n"):
+                        if not line:
+                            break
+                        # Advance past oversized records, including records that
+                        # arrive over several reads. Otherwise one long line can
+                        # permanently prevent later login failures being read.
+                        if key in discarding or len(line) > 65536:
+                            if line.endswith(b"\n"):
+                                discarding.pop(key, None)
+                            else:
+                                discarding[key] = True
+                            continue
+                        if not line.endswith(b"\n"):
                             stream.seek(offset)
                             break
                         if len(line) <= 65536:

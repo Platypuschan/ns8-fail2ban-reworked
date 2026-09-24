@@ -136,10 +136,12 @@ NODE_OPTIONS=--openssl-legacy-provider corepack yarn build
 `build-images.sh` uses Buildah, Git and Node 24/Corepack to build the engine and
 module. Upstream Fail2ban is pinned to commit
 `f60978618a101427b06924fc932b44350fec2b63` (1.1.1). Engine tags include the module
-commit, so updates select matching Python actions and node code. The **Build
-installable NS8 images** workflow publishes `ghcr.io/platypuschan/fail2ban-reworked:dev`
-and a matching engine; `v*` tags also publish a versioned module. The package must
-be public for unauthenticated NS8 installation.
+commit, so updates select matching Python actions and node code. After all
+validation jobs, including the NS8 VM test, succeed on `main`, the workflow
+publishes `ghcr.io/platypuschan/fail2ban-reworked:dev` and a matching engine.
+The separate **Build installable NS8 images** workflow also supports manual
+builds and versioned `v*` tags. Both the `fail2ban-reworked` and `fail2ban-engine`
+packages must be public for unauthenticated NS8 installation.
 
 ```bash
 # After the image build succeeds, on an NS8 cluster leader:
@@ -149,8 +151,13 @@ add-module ghcr.io/platypuschan/fail2ban-reworked:dev <node-id>
 The validation workflow tests synchronization, outage/replay handling, concurrent
 updates, parsers, authenticated HTTP, a real Fail2ban process, actual nftables
 traffic enforcement in isolated network namespaces, and the production UI build.
-An installed NS8 host remains necessary to verify Traefik certificate issuance,
-live application log formats, SELinux and complete module backup/restore.
+It also installs a fresh NS8 cluster in a disposable Rocky Linux 9 VM and checks
+module installation, five actual failed admin logins, blocking, ntfy delivery,
+the Traefik route, imported bans without notifications, manual unban, whitelist,
+SQLite backup snapshots, service restart and removal. The VM's reserved test
+hostname uses a self-signed certificate. Real ACME certificate issuance,
+complete NS8 backup/restore and live Gitea/Organizr/Samba authentication remain
+deployment checks; those application parsers are covered by log fixtures.
 
 ## References
 
