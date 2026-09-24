@@ -13,7 +13,7 @@
       >
     </p>
     <img
-      :src="require('../assets/module_default_logo.svg')"
+      :src="require('../assets/module_default_logo.png')"
       width="96"
       height="96"
       alt="Fail2ban"
