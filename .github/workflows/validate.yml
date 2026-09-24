@@ -100,3 +100,33 @@ jobs:
           name: ns8-smoke-diagnostics
           path: tests/outputs
           retention-days: 7
+  publish-development-image:
+    needs: ns8
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: module-ui
+          path: ui/dist
+      - name: Build validated source with public registry references
+        id: images
+        run: ./build-images.sh
+        env:
+          REPOBASE: ghcr.io/${{ github.repository_owner }}
+      - name: Log in to GHCR
+        run: printf '%s' "$REGISTRY_TOKEN" | buildah login --username "$GITHUB_ACTOR" --password-stdin ghcr.io
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish development module and matching engine
+        run: |
+          buildah push "$ENGINE" "docker://$ENGINE"
+          buildah push "$MODULE" "docker://$MODULE:dev"
+          buildah push "$MODULE" "docker://$MODULE:sha-${GITHUB_SHA:0:12}"
+        env:
+          ENGINE: ${{ steps.images.outputs.engine }}
+          MODULE: ${{ steps.images.outputs.module }}

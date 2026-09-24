@@ -1,4 +1,5 @@
 import concurrent.futures
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import tempfile
@@ -8,7 +9,8 @@ from unittest.mock import patch
 import uuid
 from urllib.error import HTTPError
 
-from f2bns8.common import address, database, networks, public_host
+from f2bns8.common import address, atomic_json, database, networks, public_host
+from f2bns8.collector import Collector, owns_record
 from f2bns8.node import Node
 from f2bns8.registry import Registry
 from f2bns8.transport import make_server, request
@@ -206,6 +208,38 @@ class ParserTests(unittest.TestCase):
         self.assertIsNone(parse("ns8", line.replace("cluster-admin-https@file", "myapp@file")))
         self.assertIsNone(parse("ns8", line.replace("/api/login", "/api/users")))
         self.assertEqual(parse("ns8", line.replace('"Firefox"', '"forged \\" POST /cluster-admin/api/login HTTP/1.1"')), "198.51.100.6")
+
+
+class CollectorTests(unittest.TestCase):
+    def test_rootless_container_journal_uses_module_subuids(self):
+        source = {"module": "traefik1", "uid": "1001", "uid_ranges": [(1001, 1002), (100000, 165536)]}
+        for uid in (1001, 100000, 165535):
+            self.assertTrue(owns_record(source, {"_UID": str(uid)}))
+        for uid in (0, 1002, 99999, 165536):
+            # Container names alone cannot impersonate a different module.
+            self.assertFalse(owns_record(source, {"_UID": str(uid), "CONTAINER_NAME": "traefik"}))
+
+    def test_oversized_partial_log_does_not_hide_later_failures(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"F2B_STATE_DIR": directory}):
+            root = Path(directory)
+            path = root / "organizr.log"
+            path.write_bytes(b"x" * 70000)
+            collector = Collector()
+            collector.files = [({"module": "organizr1"}, path)]
+            collector.tail_files()
+            atomic_json(root / "collector.json", collector.checkpoint)
+            # Collection must resume correctly even after a service restart.
+            collector = Collector()
+            collector.files = [({"module": "organizr1"}, path)]
+            record = {"channel": "Authentication", "message": "Wrong Password",
+                "remote_ip_address": "198.51.100.4", "datetime": datetime.now(timezone.utc).isoformat()}
+            with path.open("a") as stream:
+                stream.write("remaining oversized record\n" + json.dumps(record) + "\n")
+            collector.tail_files()
+            detected = (root / "logs/organizr.log").read_text().splitlines()
+            self.assertEqual(len(detected), 1)
+            self.assertIn("198.51.100.4", detected[0])
+            self.assertIn("Wrong Password", detected[0])
 
 
 class ConfigurationTests(unittest.TestCase):
