@@ -57,4 +57,44 @@ jobs:
           name: module-ui
           path: ui/dist
       - name: Build the actual NS8 and Fail2ban images
+        id: build
         run: ./build-images.sh
+        env:
+          REPOBASE: 10.0.2.2:5000/ns8-ci
+      - name: Export the tested image pair
+        run: |
+          mkdir -p .build/images
+          buildah push "$ENGINE" "oci-archive:$PWD/.build/images/engine.oci"
+          buildah push "$MODULE" "oci-archive:$PWD/.build/images/module.oci"
+          printf '%s\n' "$ENGINE" > .build/images/engine-reference
+        env:
+          ENGINE: ${{ steps.build.outputs.engine }}
+          MODULE: ${{ steps.build.outputs.module }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ns8-images
+          path: .build/images
+          retention-days: 7
+  ns8:
+    needs: images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ns8-images
+          path: .build/images
+      - name: Install VM test tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y qemu-system-x86 qemu-utils cloud-image-utils skopeo acl
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Install NS8 and exercise the module
+        run: bash scripts/qemu-smoke.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ns8-smoke-diagnostics
+          path: tests/outputs
+          retention-days: 7

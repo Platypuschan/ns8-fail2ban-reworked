@@ -74,7 +74,7 @@ class Collector:
     def __init__(self):
         self.root = state_dir()
         self.node = Node(self.root / "node.sqlite3")
-        self.checkpoint = read_json(self.root / "collector.json", {"cursor": "", "files": {}})
+        self.checkpoint = read_json(self.root / "collector.json", {"cursor": "", "files": {}, "started": time.time(), "since": time.time()})
         self.sources = []
         self.files = []
         self.last_save = 0
@@ -105,7 +105,7 @@ class Collector:
 
     def emit(self, jail, module, message, when):
         ip = parse(jail, message)
-        if not ip or time.time() - when > 600 or when - time.time() > 60:
+        if not ip or when < self.checkpoint.get("started", 0) or time.time() - when > 600 or when - time.time() > 60:
             return
         stamp = datetime.fromtimestamp(when, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S%z")
         record = json.dumps({"module": module, "log": message}, ensure_ascii=True)
@@ -118,6 +118,8 @@ class Collector:
         self.node.set("last_detection", {"jail": jail, "module": module, "time": now()})
 
     def journal(self, record):
+        if record.get("__CURSOR") == self.checkpoint["cursor"]:
+            return
         message = record.get("MESSAGE", "")
         if not isinstance(message, str):
             return
@@ -134,6 +136,7 @@ class Collector:
                     self.emit(source["jail"], source["module"], message, when)
         if record.get("__CURSOR"):
             self.checkpoint["cursor"] = record["__CURSOR"]
+            self.checkpoint["since"] = when
 
     def tail_files(self):
         for source, path in self.files:
@@ -169,7 +172,7 @@ class Collector:
         self.refresh()
         command = ["journalctl", "--follow", "--output=json", "--no-pager", "--all", "--lines=all"]
         cursor = self.checkpoint["cursor"]
-        command += ["--after-cursor=" + cursor] if cursor else ["--since=-10 minutes"]
+        command += ["--after-cursor=" + cursor] if cursor else ["--since=@" + str(self.checkpoint.get("since", time.time()))]
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         pending, refreshed = b"", time.monotonic()
         try:
@@ -188,6 +191,11 @@ class Collector:
                 if time.monotonic() - refreshed > 60:
                     self.refresh()
                     refreshed = time.monotonic()
+            if cursor:
+                # A journal vacuum or reboot can invalidate a saved cursor.
+                # Resume from its timestamp, not from historical login failures.
+                self.checkpoint["cursor"] = ""
+                atomic_json(self.root / "collector.json", self.checkpoint)
             raise RuntimeError("Journal reader stopped; systemd will restart collection")
         finally:
             process.terminate()
