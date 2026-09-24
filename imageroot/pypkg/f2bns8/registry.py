@@ -2,7 +2,7 @@
 
 import json
 import uuid
-from .common import address, allowed, database, networks, now, safe_text
+from .common import LOOPBACKS, address, allowed, database, networks, now, safe_text
 
 
 class Registry:
@@ -98,7 +98,9 @@ class Registry:
             return self._snapshot(db)
 
     def set_whitelist(self, values, expected_revision):
-        values = networks(values)
+        # A host-wide ban on loopback would break the coordinator and other NS8
+        # services. These two local-only networks are therefore invariant.
+        values = networks(networks(values) + list(LOOPBACKS))
         with database(self.path) as db:
             meta = self._meta(db)
             if expected_revision != int(meta["whitelist_revision"]):

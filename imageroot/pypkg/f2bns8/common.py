@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 JAILS = ("sshd", "ns8", "gitea", "organizr", "samba")
+LOOPBACKS = ("127.0.0.0/8", "::1/128")
 
 
 def now():

@@ -50,7 +50,8 @@ scopes. This project targets NS8, including separate NS8 installations.
 4. Enter whitelist addresses or ranges, one per line. IPv4, IPv6, CIDR and
    `first-last` ranges are supported. Whitelist edits apply to the shared list
    and clear matching bans. Concurrent edits require a refresh before overwriting
-   another administrator's changes.
+   another administrator's changes. The local-only loopback networks remain
+   whitelisted so an authentication failure cannot break internal NS8 services.
 5. Select blocked addresses and click **Unblock selected**. This changes the
    common list; no node/scope choice is required.
 6. Optionally enable notifications and set the ntfy server URL, topic and token.
@@ -104,6 +105,11 @@ engine runs in a container with no network and no capabilities. Its Python actio
 writes to the durable node queue; no log content or IP is interpolated into shell
 commands. The worker owns firewall enforcement and retries independently of
 HTTPS or ntfy availability. The module never flushes the host firewall ruleset.
+
+Host-wide input, output and forwarding hooks require an NS8 rootful module.
+Clusters that enforce certification for third-party rootful applications must
+trust/certify this package before installation; a rootless implementation could
+not provide the requested all-traffic host firewall behavior.
 
 State and secrets are stored under the module's private NS8 state directory.
 NS8 backups include online SQLite backup snapshots and configuration. Live WAL
