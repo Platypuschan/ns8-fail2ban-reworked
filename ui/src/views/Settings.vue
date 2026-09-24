@@ -327,8 +327,12 @@ export default {
     },
     unban() {
       return this.perform(async () => {
-        await this.task("unban-addresses", { ips: this.selected });
-        this.selected = [];
+        const addresses = [...this.selected];
+        for (let offset = 0; offset < addresses.length; offset += 1000) {
+          const ips = addresses.slice(offset, offset + 1000);
+          await this.task("unban-addresses", { ips });
+          this.selected = this.selected.filter((ip) => !ips.includes(ip));
+        }
         await this.fetchBans();
         this.success = this.$t("f.unbanned");
       });
@@ -342,9 +346,7 @@ export default {
       return this.perform(() => this.fetchBans());
     },
     selectAll(value) {
-      this.selected = value
-        ? this.visibleBans.slice(0, 1000).map((b) => b.ip)
-        : [];
+      this.selected = value ? this.visibleBans.map((b) => b.ip) : [];
     },
     formatDate(value) {
       return value ? new Date(value).toLocaleString() : "";

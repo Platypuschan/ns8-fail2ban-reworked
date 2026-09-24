@@ -87,6 +87,9 @@ PARSERS = {"sshd": ssh, "gitea": gitea, "organizr": organizr, "samba": samba, "n
 
 def parse(jail, message):
     try:
-        return PARSERS[jail](message)
+        # Container stdout records commonly retain their final newline in the
+        # systemd journal. Keep strict, whole-record parsers while normalizing
+        # only that transport delimiter.
+        return PARSERS[jail](message.rstrip("\r\n"))
     except (ValueError, KeyError, TypeError, AttributeError):
         return None

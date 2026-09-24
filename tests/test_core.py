@@ -204,6 +204,7 @@ class ParserTests(unittest.TestCase):
     def test_ns8_login_only_on_ns8_router(self):
         line = '198.51.100.6 - - [23/Sep/2026:12:00:00 +0000] "POST /cluster-admin/api/login HTTP/2.0" 401 52 "-" "Firefox" 1 "cluster-admin-https@file" "http://127.0.0.1:9311" 2ms'
         self.assertEqual(parse("ns8", line), "198.51.100.6")
+        self.assertEqual(parse("ns8", line + "\n"), "198.51.100.6")
         self.assertIsNone(parse("ns8", line.replace("401", "200")))
         self.assertIsNone(parse("ns8", line.replace("cluster-admin-https@file", "myapp@file")))
         self.assertIsNone(parse("ns8", line.replace("/api/login", "/api/users")))
@@ -246,6 +247,8 @@ class ConfigurationTests(unittest.TestCase):
     def test_whitelist_ranges(self):
         self.assertEqual(networks(["192.0.2.1-192.0.2.2"]), ["192.0.2.1/32", "192.0.2.2/32"])
         self.assertEqual(networks(["192.0.2.17/24"]), ["192.0.2.0/24"])
+        self.assertEqual(networks(["::ffff:192.0.2.17/120"]), ["192.0.2.0/24"])
+        self.assertEqual(networks(["::ffff:192.0.2.1-::ffff:192.0.2.2"]), ["192.0.2.1/32", "192.0.2.2/32"])
         for value in ("192.0.2.1 # comment", "192.0.2.1;touch /tmp/bad", "fe80::1%eth0"):
             with self.assertRaises(ValueError):
                 networks([value])

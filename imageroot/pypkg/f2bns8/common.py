@@ -92,7 +92,13 @@ def networks(values):
             result.update(str(n) for n in ipaddress.summarize_address_range(first, last))
         else:
             result.add(str(ipaddress.ip_network(value, strict=False)))
-    return sorted(result)
+    canonical = set()
+    for value in result:
+        net = ipaddress.ip_network(value)
+        if isinstance(net, ipaddress.IPv6Network) and net.prefixlen >= 96 and net.network_address.ipv4_mapped:
+            net = ipaddress.ip_network((net.network_address.ipv4_mapped, net.prefixlen - 96))
+        canonical.add(str(net))
+    return sorted(canonical)
 
 
 def allowed(ip, whitelist):
