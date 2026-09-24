@@ -43,6 +43,8 @@ jobs:
         working-directory: ui
         env:
           NODE_OPTIONS: --openssl-legacy-provider
+      - name: Check the PNG logo required by NS8 module discovery
+        run: test -n "$(find ui/dist/img -name '*logo*.png' -print -quit)"
       - uses: actions/upload-artifact@v4
         with:
           name: module-ui
