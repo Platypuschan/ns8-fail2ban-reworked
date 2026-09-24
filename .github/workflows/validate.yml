@@ -124,6 +124,10 @@ jobs:
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Publish development module and matching engine
         run: |
+          if [[ "$(git ls-remote origin refs/heads/main | cut -f1)" != "$GITHUB_SHA" ]]; then
+            echo 'A newer main commit exists; skip this development image.'
+            exit 0
+          fi
           buildah push "$ENGINE" "docker://$ENGINE"
           buildah push "$MODULE" "docker://$MODULE:dev"
           buildah push "$MODULE" "docker://$MODULE:sha-${GITHUB_SHA:0:12}"
