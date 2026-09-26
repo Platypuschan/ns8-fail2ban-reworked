@@ -285,8 +285,8 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(validate({"mode": "coordinator", "public_url": "https://bans.example.org", "notifications": {}}, settings)["sync_token"], settings["sync_token"])
 
     def test_notification_has_all_requested_fields(self):
-        body = message({"ip": "198.51.100.2", "since": "2026-09-23T12:00:00Z", "jail": "gitea", "node": "ns8-home", "module": "gitea1", "matches": "Wrong password"})
-        for item in ("198.51.100.2", "2026-09-23T12:00:00Z", "gitea", "ns8-home", "gitea1", "Wrong password"):
+        body = message({"ip": "198.51.100.2", "since": "2026-09-23T12:00:00Z", "jail": "gitea", "node": "example-node", "module": "example-module", "matches": "Wrong password"})
+        for item in ("198.51.100.2", "2026-09-23T12:00:00Z", "gitea", "example-node", "example-module", "Wrong password"):
             self.assertIn(item, body)
 
 
