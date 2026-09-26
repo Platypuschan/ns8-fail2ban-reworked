@@ -128,7 +128,7 @@
           v-model="whitelist"
           :label="$t('f.ranges')"
           :rows="5"
-          placeholder="192.168.178.0/24&#10;2001:db8::/32"
+          placeholder="192.0.2.0/24&#10;2001:db8::/32"
         />
         <cv-button
           kind="secondary"

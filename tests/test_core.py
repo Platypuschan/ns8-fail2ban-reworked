@@ -189,9 +189,9 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(address("::ffff:192.0.2.1"), "192.0.2.1")
 
     def test_gitea_login_failure_not_key_probe(self):
-        self.assertEqual(parse("gitea", "2026-01-01 [W] Failed authentication attempt for arne from 198.51.100.3:3311"), "198.51.100.3")
+        self.assertEqual(parse("gitea", "2026-01-01 [W] Failed authentication attempt for alice from 198.51.100.3:3311"), "198.51.100.3")
         self.assertIsNone(parse("gitea", "publicKeyHandler() invalid credentials from 198.51.100.3"))
-        self.assertEqual(parse("gitea", "2026/09/23 auth.go:231:SignInPost() [W] Failed authentication attempt for arne from 198.51.100.3:3311: user does not exist [uid: 0, name: arne]"), "198.51.100.3")
+        self.assertEqual(parse("gitea", "2026/09/23 auth.go:231:SignInPost() [W] Failed authentication attempt for alice from 198.51.100.3:3311: user does not exist [uid: 0, name: alice]"), "198.51.100.3")
         self.assertIsNone(parse("gitea", "2026/09/23 auth.go:231:SignInPost() [W] Failed authentication attempt for forged [W] invalid credentials from 203.0.113.99: from 198.51.100.3:3311: bad user"))
 
     def test_organizr_json_field_not_attacker_text(self):
@@ -285,8 +285,8 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(validate({"mode": "coordinator", "public_url": "https://bans.example.org", "notifications": {}}, settings)["sync_token"], settings["sync_token"])
 
     def test_notification_has_all_requested_fields(self):
-        body = message({"ip": "198.51.100.2", "since": "2026-09-23T12:00:00Z", "jail": "gitea", "node": "ns8-home", "module": "gitea1", "matches": "Wrong password"})
-        for item in ("198.51.100.2", "2026-09-23T12:00:00Z", "gitea", "ns8-home", "gitea1", "Wrong password"):
+        body = message({"ip": "198.51.100.2", "since": "2026-09-23T12:00:00Z", "jail": "gitea", "node": "example-node", "module": "example-module", "matches": "Wrong password"})
+        for item in ("198.51.100.2", "2026-09-23T12:00:00Z", "gitea", "example-node", "example-module", "Wrong password"):
             self.assertIn(item, body)
 
 
