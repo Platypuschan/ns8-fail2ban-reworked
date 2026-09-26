@@ -1,0 +1,54 @@
+name: Publish tested catalog version
+
+on:
+  workflow_run:
+    workflows: ["Validate module"]
+    types: [completed]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  promote:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - name: Promote the tested image once
+        shell: bash
+        env:
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          current_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [[ "$current_sha" != "$TESTED_SHA" ]]; then
+            echo 'A newer main commit exists; its test run will publish the version.'
+            exit 0
+          fi
+
+          version="$(tr -d '[:space:]' < CATALOG_VERSION)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid SemVer catalog version: $version" >&2
+            exit 1
+          fi
+
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/fail2ban-reworked"
+          sudo apt-get update -qq
+          sudo apt-get install -y skopeo
+          if skopeo inspect --raw "docker://$image:$version" >/dev/null 2>&1; then
+            echo "$image:$version already exists; keeping its original tested build."
+            exit 0
+          fi
+
+          printf '%s' "$REGISTRY_TOKEN" | skopeo login --username "$GITHUB_ACTOR" --password-stdin ghcr.io
+          skopeo copy --all "docker://$image:dev" "docker://$image:$version"
+          skopeo inspect --raw "docker://$image:$version" >/dev/null
+          echo "Published $image:$version from tested commit $TESTED_SHA" >> "$GITHUB_STEP_SUMMARY"
+
