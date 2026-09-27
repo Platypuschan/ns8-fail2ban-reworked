@@ -6,7 +6,7 @@ import subprocess
 import time
 import uuid
 
-from f2bns8.common import config, state_dir
+from f2bns8.common import config, now, state_dir
 from f2bns8.collector import discover
 from f2bns8.lifecycle import PARTS
 from f2bns8.node import Node
@@ -75,8 +75,16 @@ print("PASS: NS8 reverse proxy reaches the embedded coordinator", flush=True)
 
 # Emulate the authenticated synchronization message from a second module.
 snapshot = node.snapshot()
-call(settings, "/v1/sync", {"node": str(uuid.uuid4()), "name": "other NS8 node", "revision": snapshot["revision"],
-    "identity": snapshot["identity"], "events": [{"id": str(uuid.uuid4()), "ip": "203.0.113.7", "base_revision": snapshot["revision"], "jail": "sshd", "module": "host"}]})
+peer_id = str(uuid.uuid4())
+registration = call(settings, "/v1/sync", {"node": peer_id, "name": "other NS8 node",
+    "revision": snapshot["revision"], "identity": snapshot["identity"], "events": [], "delta_supported": True})
+assert registration["reset_pending"]
+imported = call(settings, "/v1/sync", {"node": peer_id, "name": "other NS8 node",
+    "revision": registration["revision"], "identity": registration["identity"],
+    "rebase_ack": registration["rebase_nonce"], "events": [
+        {"id": str(uuid.uuid4()), "ip": "203.0.113.7", "base_revision": registration["revision"],
+         "jail": "sshd", "module": "host", "since": now()}], "delta_supported": True})
+assert imported["results"][0]["result"] == "accepted", imported["results"]
 wait_for(lambda: any(b["ip"] == "203.0.113.7" for b in node.bans()), "imported ban reaches local enforcement")
 time.sleep(3)
 assert len(Path("/tmp/ns8-notifications.jsonl").read_text().splitlines()) == 1

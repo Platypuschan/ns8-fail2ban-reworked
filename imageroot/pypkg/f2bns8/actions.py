@@ -1,5 +1,7 @@
 """Small NS8 task API used by the module settings page."""
 import json
+import contextlib
+import ipaddress
 import os
 import re
 import secrets
@@ -8,7 +10,7 @@ import socket
 import sys
 import uuid
 from urllib.error import HTTPError
-from .common import atomic_json, config, database, networks, public_host, state_dir, url
+from .common import atomic_json, config, database, local_networks, networks, public_host, protected_networks, state_dir, url
 from . import lifecycle
 from .node import Node
 from .registry import Registry
@@ -33,6 +35,16 @@ def validate(data, old):
     if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", token):
         raise ValueError("Use the connection token from the coordinator settings")
     settings["sync_token"] = token
+    protected = data.get("protected_networks", old.get("protected_networks", []))
+    if not isinstance(protected, list) or len(protected) > 64:
+        raise ValueError("Protect at most 64 additional host or VPN networks")
+    settings["protected_networks"] = networks(protected)
+    if len(settings["protected_networks"]) > 64:
+        raise ValueError("Protect at most 64 networks after expanding address ranges")
+    if len(set(settings["protected_networks"] + local_networks())) > 128:
+        raise ValueError("Protect at most 128 local and configured networks in total")
+    if any(ipaddress.ip_network(value).prefixlen == 0 for value in settings["protected_networks"]):
+        raise ValueError("Do not protect the entire Internet; enter the cluster VPN subnet")
     notice = data.get("notifications", {})
     settings["notifications"] = {"enabled": notice.get("enabled", False), "url": "", "topic": "", "token": ""}
     if type(settings["notifications"]["enabled"]) is not bool:
@@ -42,6 +54,7 @@ def validate(data, old):
         notice_token = ""
     if not isinstance(notice_token, str) or any(ord(c) < 32 or ord(c) > 126 for c in notice_token):
         raise ValueError("Invalid ntfy token")
+    settings["notifications"]["token"] = notice_token
     if notice.get("enabled") or notice.get("url"):
         notice_url = url(notice.get("url", ""), https_only=False)
         topic = notice.get("topic", "")
@@ -49,6 +62,27 @@ def validate(data, old):
             raise ValueError("Enter a valid ntfy topic")
         settings["notifications"].update(url=notice_url, topic=topic, token=notice_token)
     return settings
+
+
+def enroll(node, settings):
+    # First configuration must register before the engine and collector start.
+    # A missing coordinator node record otherwise causes the first sync to
+    # discard bans detected during the startup race or a short outage.
+    registry = Registry(state_dir() / "coordinator.sqlite3") if settings["mode"] == "coordinator" else None
+    for _ in range(2):
+        snapshot = node.snapshot()
+        payload = {"node": settings["node_id"], "name": settings["node_name"],
+                   "revision": snapshot["revision"], "identity": snapshot["identity"],
+                   "events": [], "protected": protected_networks(),
+                   "delta_supported": True, "rebase_ack": node.get("rebase_nonce", "")}
+        response = (registry.sync(payload["node"], payload["name"], payload["revision"],
+                    payload["identity"], payload["events"], payload["protected"],
+                    delta_supported=True, rebase_ack=payload["rebase_ack"])
+                    if registry else call(settings, "/v1/sync", payload))
+        node.apply(response)
+        if not response.get("reset_pending"):
+            return
+    raise RuntimeError("Coordinator enrollment did not complete")
 
 
 def configure(data):
@@ -69,6 +103,8 @@ def configure(data):
         if settings["mode"] == "coordinator":
             lifecycle.route(settings)
         atomic_json(state_dir() / "config.json", settings)
+        if not old:
+            enroll(node, settings)
         lifecycle.start(settings)
     except Exception:
         if old:
@@ -76,6 +112,20 @@ def configure(data):
             if old["mode"] == "coordinator":
                 lifecycle.route(old)
             lifecycle.start(old)
+        else:
+            try:
+                lifecycle.destroy()
+            finally:
+                root = state_dir()
+                (root / "config.json").unlink(missing_ok=True)
+                for name in ("node.sqlite3", "coordinator.sqlite3", "engine/fail2ban.sqlite3"):
+                    for suffix in ("", "-wal", "-shm"):
+                        (root / (name + suffix)).unlink(missing_ok=True)
+                for event in (root / "engine/outbox").glob("*.json"):
+                    event.unlink(missing_ok=True)
+                if settings["mode"] == "coordinator":
+                    with contextlib.suppress(Exception):
+                        lifecycle.route(settings, delete=True)
         raise
     return {"configured": True}
 
@@ -90,13 +140,15 @@ def view():
         "sync_token_configured": bool(settings.get("sync_token")),
         "notifications": {**{k: notices.get(k, "") for k in ("url", "topic")},
             "enabled": notices.get("enabled", False), "token_configured": bool(notices.get("token"))},
+        "protected_networks": settings.get("protected_networks", []),
+        "active_protection": protected_networks(),
         "whitelist": snapshot["whitelist"], "whitelist_revision": snapshot["whitelist_revision"],
         "bans": node.bans(), "sources": node.get("sources", [])}
 
 
 def diagnostics():
     node = Node(state_dir() / "node.sqlite3")
-    with database(node.path) as db:
+    with database(node.path, write=False) as db:
         pending = db.execute("SELECT count(*) FROM pending").fetchone()[0]
         notifications = db.execute("SELECT count(*) FROM notifications").fetchone()[0]
     return {"revision": node.snapshot()["revision"], "pending_bans": pending,

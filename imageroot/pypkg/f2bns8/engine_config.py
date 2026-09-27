@@ -6,9 +6,10 @@ from .common import JAILS
 
 def generate(state, root, upstream, action):
     state, root = Path(state), Path(root)
-    (state / "logs").mkdir(parents=True, exist_ok=True)
+    # The host prepares these files; the engine sees a read-only log mount.
     for jail in JAILS:
-        (state / "logs" / (jail + ".log")).touch(exist_ok=True)
+        if not (state / "logs" / (jail + ".log")).is_file():
+            raise FileNotFoundError(state / "logs" / (jail + ".log"))
     shutil.copytree(upstream, root, dirs_exist_ok=True)
     (root / "action.d/ns8.py").write_text(Path(action).read_text())
     (root / "filter.d/ns8.conf").write_text('[Definition]\nfailregex = ^\\s*<HOST> \\{.*\\}$\nignoreregex =\ndatepattern = {^LN-BEG}%%Y-%%m-%%dT%%H:%%M:%%S%%z\n')

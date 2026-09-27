@@ -138,6 +138,27 @@
         >
       </section>
       <section>
+        <h2>{{ $t("f.protectedTitle") }}</h2>
+        <p>{{ $t("f.protectedHelp") }}</p>
+        <p>
+          {{ $t("f.autoProtected") }}
+          <code>{{ activeProtection.join(", ") }}</code>
+        </p>
+        <cv-text-area
+          v-model="protectedRanges"
+          :label="$t('f.protectedRanges')"
+          :rows="3"
+          placeholder="10.5.4.0/24"
+        />
+        <cv-button
+          kind="secondary"
+          :disabled="busy || !configured"
+          @click="saveProtection"
+        >
+          {{ $t("f.saveProtection") }}
+        </cv-button>
+      </section>
+      <section>
         <h2>{{ $t("f.blocked") }} ({{ bans.length }})</h2>
         <div class="toolbar">
           <cv-button
@@ -231,6 +252,8 @@ export default {
     ntfyTokenConfigured: false,
     whitelist: "",
     whitelistRevision: 0,
+    protectedRanges: "",
+    activeProtection: [],
     bans: [],
     sources: [],
     selected: [],
@@ -288,6 +311,8 @@ export default {
       this.ntfyTokenConfigured = result.notifications.token_configured;
       this.whitelist = result.whitelist.join("\n");
       this.whitelistRevision = result.whitelist_revision;
+      this.protectedRanges = result.protected_networks.join("\n");
+      this.activeProtection = result.active_protection;
       this.bans = result.bans;
       this.sources = result.sources;
       this.loaded = true;
@@ -322,6 +347,19 @@ export default {
         this.whitelist = result.whitelist.join("\n");
         this.whitelistRevision = result.whitelist_revision;
         this.bans = result.bans;
+        this.success = this.$t("f.saved");
+      });
+    },
+    saveProtection() {
+      return this.perform(async () => {
+        await this.task("configure-module", {
+          ...this.form,
+          protected_networks: this.protectedRanges
+            .split(/\n/)
+            .map((x) => x.trim())
+            .filter(Boolean),
+        });
+        await this.load();
         this.success = this.$t("f.saved");
       });
     },

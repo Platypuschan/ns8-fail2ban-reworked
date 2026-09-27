@@ -24,6 +24,12 @@ def remote(value):
 
 def ssh(message):
     match = re.search(r"(?:^|sshd(?:\[\d+\])?: )Failed (?:password|publickey|keyboard-interactive/pam) for (?:invalid user )?[^\r\n]+ from (\S+) port \d+(?: ssh\d)?(?: \[preauth\])?$", message)
+    if not match:
+        match = re.search(r"(?:^|sshd(?:\[\d+\])?: )(?:Invalid user [^\r\n]+ from|maximum authentication attempts exceeded for [^\r\n]+ from) (\S+) port \d+(?: ssh\d)?(?: \[preauth\])?$", message)
+    # Generic connection closures can occur without an authentication
+    # attempt, so only count the explicit invalid-user preauth form.
+    if not match:
+        match = re.search(r"(?:^|sshd(?:\[\d+\])?: )Connection closed by invalid user [^\r\n]+ (\S+) port \d+ \[preauth\]$", message)
     return remote(match[1]) if match else None
 
 

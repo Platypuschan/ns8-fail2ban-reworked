@@ -34,6 +34,20 @@ def install():
     root = state_dir()
     root.mkdir(parents=True, exist_ok=True)
     os.chmod(root, 0o700)
+    (root / "logs").mkdir(exist_ok=True)
+    os.chmod(root / "logs", 0o755)
+    for jail in ("sshd", "ns8", "gitea", "organizr", "samba"):
+        log = root / "logs" / (jail + ".log")
+        log.touch(exist_ok=True)
+        os.chmod(log, 0o644)
+    (root / "engine" / "outbox").mkdir(parents=True, exist_ok=True)
+    os.chown(root / "engine", 65532, 65532)
+    os.chown(root / "engine" / "outbox", 65532, 65532)
+    os.chmod(root / "engine", 0o700)
+    os.chmod(root / "engine" / "outbox", 0o700)
+    atomic_json(root / "engine" / "meta.json", {"node_name": config().get("node_name", ""),
+        "notify": config().get("notifications", {}).get("enabled", False)})
+    os.chmod(root / "engine" / "meta.json", 0o644)
     for part in PARTS:
         name = module + "-" + part + ".service"
         start = "/usr/local/bin/runagent -m " + module + " python3 -m f2bns8." + ("transport" if part == "coordinator" else part)
@@ -43,8 +57,9 @@ def install():
             if not image:
                 raise RuntimeError("FAIL2BAN_ENGINE_IMAGE is missing from the NS8 image environment")
             start = ("/usr/bin/podman run --rm --replace --name " + module + "-engine"
-                + " --network=none --cap-drop=all --security-opt=no-new-privileges --read-only"
-                + " --tmpfs=/run:rw,nosuid,nodev --volume=" + str(root) + ":/state:z"
+                + " --network=none --user=65532:65532 --cap-drop=all --security-opt=no-new-privileges --read-only"
+                + " --tmpfs=/run:rw,nosuid,nodev,mode=1777 --volume=" + str(root / "engine") + ":/state:z"
+                + " --volume=" + str(root / "logs") + ":/state/logs:ro,z"
                 + " --env=F2B_STATE_DIR=/state --log-driver=journald " + image)
             extra = "ExecStop=/usr/bin/podman stop --ignore -t 15 " + module + "-engine\n"
         unit = ("[Unit]\nDescription=NS8 Fail2ban " + part + " (" + module + ")\n"
@@ -78,22 +93,30 @@ def start(settings):
 
 def destroy():
     from .firewall import remove
+    from .collector import restore_samba_logging
     module = os.environ["MODULE_ID"]
     for part in PARTS:
         name = module + "-" + part + ".service"
         systemctl("disable", "--now", name, check=False)
         Path("/etc/systemd/system", name).unlink(missing_ok=True)
     systemctl("daemon-reload")
-    if config().get("mode") == "coordinator":
-        route(config(), delete=True)
     remove(module)
+    try:
+        restore_samba_logging()
+    finally:
+        if config().get("mode") == "coordinator":
+            route(config(), delete=True)
 
 
 def backup():
     root = state_dir()
     target = root / "backup"
     target.mkdir(exist_ok=True)
-    for name in ("node", "coordinator", "fail2ban"):
+    if config().get("mode") != "coordinator":
+        (target / "coordinator.sqlite3").unlink(missing_ok=True)
+    for name in ("node", "coordinator"):
+        if name == "coordinator" and config().get("mode") != "coordinator":
+            continue
         path = root / (name + ".sqlite3")
         if not path.exists():
             continue
@@ -107,21 +130,30 @@ def backup():
 
 def restore(clone=False):
     root = state_dir()
+    settings = config()
     for path in (root / "backup").glob("*.sqlite3"):
+        if path.name == "coordinator.sqlite3" and (clone or settings.get("mode") != "coordinator"):
+            continue
         for suffix in ("", "-wal", "-shm"):
             (root / (path.name + suffix)).unlink(missing_ok=True)
         shutil.copyfile(path, root / path.name)
         os.chmod(root / path.name, 0o600)
-    settings = config()
     if not settings:
         return
+    if settings["mode"] != "coordinator" or clone:
+        for suffix in ("", "-wal", "-shm"):
+            (root / ("coordinator.sqlite3" + suffix)).unlink(missing_ok=True)
     settings["port"] = int(os.environ["TCP_PORT"])
     if clone:
         # A second authority with copied state would fork the common ban list.
         # Clones enroll as peers of the original coordinator instead.
         settings["node_id"] = str(uuid.uuid4())
+        settings["protected_networks"] = []
         if settings["mode"] == "coordinator":
             settings.update(mode="peer", sync_url=settings["public_url"])
+        for suffix in ("", "-wal", "-shm"):
+            (root / ("coordinator.sqlite3" + suffix)).unlink(missing_ok=True)
+        (root / "backup/coordinator.sqlite3").unlink(missing_ok=True)
         from .common import database
         with database(root / "node.sqlite3") as db:
             db.execute("DELETE FROM notifications")

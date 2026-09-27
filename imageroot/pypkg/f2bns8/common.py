@@ -1,13 +1,18 @@
 """Validation and durable local storage. No third-party dependencies."""
 
 import contextlib
+from bisect import bisect_right
+import functools
 import ipaddress
 import json
 import os
 from pathlib import Path
 import re
+import socket
 import sqlite3
+import subprocess
 import tempfile
+import time
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
@@ -51,14 +56,16 @@ def atomic_json(path, value):
 
 
 @contextlib.contextmanager
-def database(path):
+def database(path, write=True):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
+    new = not Path(path).exists()
     db = sqlite3.connect(str(path), timeout=15, isolation_level=None)
-    os.chmod(path, 0o600)
+    if new:
+        os.chmod(path, 0o600)
     db.row_factory = sqlite3.Row
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA synchronous=FULL")
-    db.execute("BEGIN IMMEDIATE")
+    if new:
+        db.execute("PRAGMA journal_mode=WAL")
+    db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
     try:
         yield db
         db.execute("COMMIT")
@@ -102,9 +109,64 @@ def networks(values):
     return sorted(canonical)
 
 
+@functools.lru_cache(maxsize=32)
+def _parsed_networks(whitelist):
+    result = []
+    for version in (4, 6):
+        spans = sorted((int(net.network_address), int(net.broadcast_address))
+            for value in whitelist if (net := ipaddress.ip_network(value)).version == version)
+        merged = []
+        for start, end in spans:
+            if merged and start <= merged[-1][1] + 1:
+                merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+            else:
+                merged.append((start, end))
+        result.append((tuple(start for start, _ in merged), tuple(end for _, end in merged)))
+    return tuple(result)
+
+
 def allowed(ip, whitelist):
     item = ipaddress.ip_address(address(ip))
-    return any(item in ipaddress.ip_network(n) for n in whitelist)
+    starts, ends = _parsed_networks(tuple(whitelist))[0 if item.version == 4 else 1]
+    pos = bisect_right(starts, int(item)) - 1
+    return pos >= 0 and int(item) <= ends[pos]
+
+
+@functools.lru_cache(maxsize=2)
+def _local_networks(interval):
+    try:
+        result = subprocess.run(["ip", "-json", "address", "show"], text=True,
+            capture_output=True, check=True, timeout=5)
+        interfaces = json.loads(result.stdout)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        interfaces = []
+        try:
+            interfaces = [{"addr_info": [{"local": item[4][0]}
+                for item in socket.getaddrinfo(socket.gethostname(), None)]}]
+        except OSError:
+            pass
+    addresses = []
+    for interface in interfaces:
+        for item in interface.get("addr_info", []):
+            try:
+                if item.get("temporary") or "temporary" in item.get("flags", []):
+                    continue
+                ip = ipaddress.ip_address(item["local"].split("%", 1)[0])
+                if not ip.is_loopback and not ip.is_unspecified:
+                    addresses.append(str(ipaddress.ip_network((ip, ip.max_prefixlen))))
+            except (KeyError, ValueError):
+                continue
+    return tuple(sorted(set(addresses)))
+
+
+def local_networks():
+    return list(_local_networks(int(time.monotonic() // 60)))
+
+
+def protected_networks():
+    # Exact interface addresses are protected on every node. Additional VPN
+    # ranges are explicitly configured by the administrator for this cluster.
+    return sorted(set(local_networks() + config().get("protected_networks", [])))
 
 
 def url(value, https_only=True):
