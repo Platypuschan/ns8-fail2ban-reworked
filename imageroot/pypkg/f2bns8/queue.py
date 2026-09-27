@@ -2,6 +2,7 @@
 
 import json
 import os
+from pathlib import Path
 import uuid
 from .common import JAILS, address, atomic_json, state_dir
 
@@ -11,7 +12,7 @@ def enqueue(event):
 
 
 def drain(node, settings, limit=100):
-    directory = state_dir() / "engine/queue"
+    directory = Path(node.path).parent / "engine/queue"
     for path in sorted(directory.glob("*.json"))[:limit]:
         if path.is_symlink():
             continue

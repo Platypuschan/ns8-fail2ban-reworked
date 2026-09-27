@@ -233,8 +233,12 @@ class Collector:
                     count = count or (not primary and not previous["aux"] and not previous["primary"])
                     self.ssh_sessions[key] = {"aux": previous["aux"] or not primary,
                                               "primary": previous["primary"] or primary, "time": when}
-                    if len(self.ssh_sessions) > 2048:
+                    if len(self.ssh_sessions) > 4096:
                         self.ssh_sessions = {k: v for k, v in self.ssh_sessions.items() if when - v["time"] < 600}
+                        if len(self.ssh_sessions) > 4096:
+                            oldest = sorted(self.ssh_sessions, key=lambda k: self.ssh_sessions[k]["time"])
+                            for stale in oldest[:len(self.ssh_sessions) - 4096]:
+                                del self.ssh_sessions[stale]
                     if count:
                         self.emit("sshd", "host", message, when)
                 else:
