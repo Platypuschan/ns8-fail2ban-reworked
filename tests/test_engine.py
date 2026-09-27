@@ -96,6 +96,12 @@ class EngineTests(unittest.TestCase):
         with database(self.node.path) as db:
             return db.execute("SELECT count(*) FROM notifications").fetchone()[0]
 
+    def reconcile(self, bans, whitelist):
+        process = subprocess.run([sys.executable, str(ROOT / "runtime/control.py")],
+                                 input=json.dumps({"reconcile": {"bans": bans, "whitelist": whitelist}}),
+                                 text=True, capture_output=True, check=True, env=self.env)
+        return json.loads(process.stdout)
+
     def test_threshold_permanent_ban_original_logs_and_no_restore_notification(self):
         self.assertEqual(self.command(["get", "sshd", "bantime"]), (0, -1))
         self.write_failures(4)
@@ -109,6 +115,9 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(event["module"], "host")
         self.assertEqual(event["matches"].count("Failed password"), 5)
         self.assertEqual(self.command(["get", "sshd", "banip"])[1], ["198.51.100.23"])
+        desired = ["127.0.0.0/8", "::1/128", "192.0.2.0/24"]
+        self.assertGreater(self.reconcile(["198.51.100.23"], desired)["changes"], 0)
+        self.assertEqual(self.reconcile(["198.51.100.23"], desired)["changes"], 0)
         self.stop()
         # Clear only delivery records; permanent ban must survive daemon shutdown.
         with database(self.node.path) as db:

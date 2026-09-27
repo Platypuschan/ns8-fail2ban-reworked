@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Machine-readable Fail2ban socket client inside the isolated container."""
 import json
+import ipaddress
+import os
+from pathlib import Path
 import sys
 from fail2ban.client.csocket import CSocket
 
 request = json.load(sys.stdin)
-client = CSocket("/state/engine/fail2ban.sock")
+client = CSocket(str(Path(os.environ.get("F2B_STATE_DIR", "/state")) / "engine/fail2ban.sock"))
 try:
     def send(command):
         response = client.send(command)
@@ -25,8 +28,7 @@ try:
                 if ip not in wanted:
                     send(["set", jail, "unbanip", ip])
                     changes += 1
-            from f2bns8.common import networks
-            current = set(networks(send(["get", jail, "ignoreip"])))
+            current = {str(ipaddress.ip_network(value, strict=False)) for value in send(["get", jail, "ignoreip"])}
             for ip in current - whitelist:
                 send(["set", jail, "delignoreip", ip])
                 changes += 1
