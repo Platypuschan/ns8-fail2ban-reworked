@@ -55,10 +55,13 @@ def main():
     settings = config()
     node = Node(state_dir() / "node.sqlite3")
     threading.Thread(target=sync_loop, args=(node, settings), daemon=True).start()
-    last_engine, last_engine_status, last_firewall, previous, engine_state, engine_ok = 0, 0, 0, None, None, False
+    last_engine, last_engine_status, last_firewall, last_prune, previous, engine_state, engine_ok = 0, 0, 0, 0, None, None, False
     while True:
         ips = previous or []
         try:
+            if time.monotonic() - last_prune > 3600:
+                node.prune_engine_events()
+                last_prune = time.monotonic()
             drain(node, settings)
             ips = sorted(b["ip"] for b in node.bans())
             # Reapply periodically to recover from an external firewall reset.

@@ -2,6 +2,7 @@
 
 import json
 import ipaddress
+import time
 import uuid
 from .common import address, allowed, database, local_protection, now, safe_text
 
@@ -13,6 +14,7 @@ class Node:
             db.execute("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS pending (id TEXT PRIMARY KEY, ip TEXT UNIQUE NOT NULL, event TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, event TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, retry_after REAL NOT NULL DEFAULT 0)")
+            db.execute("CREATE TABLE IF NOT EXISTS engine_events (id TEXT PRIMARY KEY, created REAL NOT NULL)")
 
     @staticmethod
     def _snapshot(db):
@@ -33,9 +35,15 @@ class Node:
         with database(self.path, readonly=True) as db:
             return self._snapshot(db)
 
-    def ban(self, ip, jail, module, node_name, matches, notify=True):
+    def ban(self, ip, jail, module, node_name, matches, notify=True, source_id=None):
         ip = address(ip)
+        if source_id is not None:
+            source_id = str(uuid.UUID(source_id))
         with database(self.path) as db:
+            if source_id is not None:
+                if db.execute("SELECT 1 FROM engine_events WHERE id=?", (source_id,)).fetchone():
+                    return None
+                db.execute("INSERT INTO engine_events VALUES (?,?)", (source_id, time.time()))
             snapshot = self._snapshot(db)
             if allowed(ip, snapshot["whitelist"] + snapshot.get("protected", []) + list(local_protection())) or any(b["ip"] == ip for b in snapshot["bans"]):
                 return None
@@ -49,6 +57,12 @@ class Node:
             if notify:
                 db.execute("INSERT INTO notifications(id,event) VALUES (?,?)", (event["id"], json.dumps(event)))
             return event
+
+    def prune_engine_events(self):
+        with database(self.path) as db:
+            db.execute("DELETE FROM engine_events WHERE created<? OR rowid IN "
+                       "(SELECT rowid FROM engine_events ORDER BY rowid DESC LIMIT -1 OFFSET 20000)",
+                       (time.time() - 30 * 86400,))
 
     def pending(self):
         with database(self.path, readonly=True) as db:

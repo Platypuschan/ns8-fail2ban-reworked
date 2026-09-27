@@ -67,7 +67,7 @@ def install():
                 raise RuntimeError("FAIL2BAN_ENGINE_IMAGE is missing from the NS8 image environment")
             start = ("/usr/bin/podman run --rm --replace --name " + module + "-engine"
                 + " --network=none --cap-drop=all --security-opt=no-new-privileges --read-only --user=65532:65532"
-                + " --tmpfs=/run:rw,nosuid,nodev,uid=65532,gid=65532,mode=0750"
+                + " --tmpfs=/run:rw,nosuid,nodev,mode=1777"
                 + " --volume=" + str(logs) + ":/state/logs:ro,z"
                 + " --volume=" + str(engine) + ":/state/engine:rw,z"
                 + " --env=F2B_STATE_DIR=/state --log-driver=journald " + image)

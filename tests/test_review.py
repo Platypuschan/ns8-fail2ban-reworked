@@ -138,10 +138,17 @@ class RecoveryTests(unittest.TestCase):
         with patch.dict(os.environ, {"F2B_STATE_DIR": str(self.root)}):
             (self.root / "engine/queue").mkdir(parents=True)
             enqueue({"ip": "198.51.100.42", "jail": "sshd", "module": "host", "matches": "failure"})
-            self.assertEqual(len(list((self.root / "engine/queue").glob("*.json"))), 1)
+            path, = list((self.root / "engine/queue").glob("*.json"))
+            payload = path.read_bytes()
             drain(self.node, {"node_name": "host", "notifications": {"enabled": True}})
             drain(self.node, {"node_name": "host", "notifications": {"enabled": True}})
             self.assertEqual(len(self.node.pending()), 1)
+            # Simulate a crash after committing the ban but before unlinking
+            # the handoff file, followed by an administrator's manual unban.
+            self.node.apply(self.registry.unban(["198.51.100.42"]))
+            path.write_bytes(payload)
+            drain(self.node, {"node_name": "host", "notifications": {"enabled": True}})
+            self.assertFalse(self.node.bans())
 
     def test_read_transaction_does_not_block_writer(self):
         with database(self.node.path, readonly=True) as reader:

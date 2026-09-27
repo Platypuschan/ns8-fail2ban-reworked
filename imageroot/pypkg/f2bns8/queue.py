@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import time
 import uuid
 from .common import JAILS, address, atomic_json, state_dir
 
@@ -18,6 +19,9 @@ def drain(node, settings, limit=100):
             continue
         try:
             uuid.UUID(path.stem)
+            if time.time() - path.stat().st_mtime > 30 * 86400:
+                path.unlink(missing_ok=True)
+                continue
             fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
             with os.fdopen(fd, "rb") as stream:
                 raw = stream.read(65537)
@@ -32,5 +36,5 @@ def drain(node, settings, limit=100):
             path.unlink(missing_ok=True)
             continue
         node.ban(*event[:3], settings.get("node_name", ""), event[3],
-                 notify=settings.get("notifications", {}).get("enabled", False))
+                 notify=settings.get("notifications", {}).get("enabled", False), source_id=path.stem)
         path.unlink(missing_ok=True)
