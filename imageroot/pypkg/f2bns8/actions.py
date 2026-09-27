@@ -42,6 +42,7 @@ def validate(data, old):
         notice_token = ""
     if not isinstance(notice_token, str) or any(ord(c) < 32 or ord(c) > 126 for c in notice_token):
         raise ValueError("Invalid ntfy token")
+    settings["notifications"]["token"] = notice_token
     if notice.get("enabled") or notice.get("url"):
         notice_url = url(notice.get("url", ""), https_only=False)
         topic = notice.get("topic", "")
@@ -76,6 +77,10 @@ def configure(data):
             if old["mode"] == "coordinator":
                 lifecycle.route(old)
             lifecycle.start(old)
+        else:
+            (state_dir() / "config.json").unlink(missing_ok=True)
+            if settings["mode"] == "coordinator":
+                lifecycle.route(settings, delete=True)
         raise
     return {"configured": True}
 

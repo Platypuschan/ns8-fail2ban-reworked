@@ -40,7 +40,7 @@ class Registry:
                 "nodes": [dict(r) for r in db.execute("SELECT name,seen,revision FROM nodes ORDER BY name")]}
 
     def snapshot(self):
-        with database(self.path) as db:
+        with database(self.path, write=False) as db:
             return self._snapshot(db)
 
     def sync(self, node, name, revision, identity, events):
@@ -85,6 +85,9 @@ class Registry:
                 db.execute("INSERT INTO events VALUES (?,?)", (event_id, json.dumps(result)))
                 results.append(result)
             db.execute("INSERT INTO nodes VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,seen=excluded.seen,revision=excluded.revision", (node, safe_text(name, 256), now(), revision))
+            if revision == int(meta["revision"]) and not results:
+                return {"identity": meta["identity"], "revision": revision,
+                        "unchanged": True, "results": []}
             return {**self._snapshot(db), "results": results}
 
     def unban(self, ips):

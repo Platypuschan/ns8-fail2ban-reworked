@@ -20,7 +20,7 @@ class Node:
                                             "whitelist": ["127.0.0.0/8", "::1/128"], "bans": [], "nodes": []}
 
     def get(self, key, default=None):
-        with database(self.path) as db:
+        with database(self.path, write=False) as db:
             row = db.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
             return json.loads(row[0]) if row else default
 
@@ -29,7 +29,7 @@ class Node:
             db.execute("INSERT OR REPLACE INTO kv VALUES (?,?)", (key, json.dumps(value)))
 
     def snapshot(self):
-        with database(self.path) as db:
+        with database(self.path, write=False) as db:
             return self._snapshot(db)
 
     def ban(self, ip, jail, module, node_name, matches, notify=True):
@@ -50,7 +50,7 @@ class Node:
             return event
 
     def pending(self):
-        with database(self.path) as db:
+        with database(self.path, write=False) as db:
             return [json.loads(r[0]) for r in db.execute("SELECT event FROM pending ORDER BY rowid LIMIT 100")]
 
     def apply(self, snapshot):
@@ -58,6 +58,10 @@ class Node:
             old = self._snapshot(db)
             if old["identity"] and old["identity"] != snapshot["identity"]:
                 raise ValueError("Coordinator identity changed")
+            if snapshot.get("unchanged"):
+                if snapshot["revision"] != old["revision"]:
+                    raise ValueError("Invalid unchanged response")
+                return
             if snapshot["revision"] < old["revision"]:
                 # A manual task and background sync can complete out of order.
                 # Consume acknowledgements but never roll the cache backwards.
@@ -78,7 +82,7 @@ class Node:
             db.execute("INSERT OR REPLACE INTO kv VALUES ('snapshot',?)", (json.dumps(clean),))
 
     def bans(self):
-        with database(self.path) as db:
+        with database(self.path, write=False) as db:
             snapshot = self._snapshot(db)
             bans = {b["ip"]: {**b, "pending": False} for b in snapshot["bans"]}
             for row in db.execute("SELECT event FROM pending"):

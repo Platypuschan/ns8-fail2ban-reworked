@@ -7,6 +7,8 @@ from .common import config, database, now, state_dir
 from .node import Node
 from .transport import NoRedirects
 
+MAX_ATTEMPTS = 10
+
 
 def message(event):
     return ("Permanent IP ban\n\nAddress: " + event["ip"] + "\nTime: " + event["since"]
@@ -44,10 +46,15 @@ def main():
                     db.execute("DELETE FROM notifications WHERE id=?", (row["id"],))
                 node.set("notification_status", {"ok": True, "last_success": now(), "error": ""})
             except Exception as error:
+                attempts = row["attempts"] + 1
                 delay = min(3600, 5 * 2 ** min(row["attempts"], 10))
                 with database(node.path) as db:
-                    db.execute("UPDATE notifications SET attempts=attempts+1,retry_after=? WHERE id=?", (time.time()+delay, row["id"]))
-                node.set("notification_status", {"ok": False, "error": str(error)[:500]})
+                    if attempts >= MAX_ATTEMPTS:
+                        db.execute("DELETE FROM notifications WHERE id=?", (row["id"],))
+                    else:
+                        db.execute("UPDATE notifications SET attempts=?,retry_after=? WHERE id=?", (attempts, time.time()+delay, row["id"]))
+                node.set("notification_status", {"ok": False, "error": str(error)[:500],
+                    "dropped": attempts >= MAX_ATTEMPTS, "event_id": row["id"]})
         time.sleep(1)
 
 

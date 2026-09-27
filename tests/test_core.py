@@ -179,6 +179,12 @@ class ApiTests(unittest.TestCase):
 
 
 class ParserTests(unittest.TestCase):
+    def test_ssh_invalid_user_and_maximum_attempts(self):
+        self.assertEqual(parse("sshd", "Invalid user admin from 198.51.100.7 port 2222"), "198.51.100.7")
+        self.assertEqual(parse("sshd", "Connection closed by invalid user admin 198.51.100.7 port 2222 [preauth]"), "198.51.100.7")
+        self.assertEqual(parse("sshd", "maximum authentication attempts exceeded for invalid user admin from 198.51.100.7 port 2222 ssh2 [preauth]"), "198.51.100.7")
+        self.assertIsNone(parse("sshd", "Connection closed by 198.51.100.7 port 2222 [preauth]"))
+
     def test_ssh_cannot_inject_a_victim_ip_through_username(self):
         raw = "Failed password for invalid user pretend from 203.0.113.99 port 1 ssh2 from 198.51.100.2 port 4200 ssh2"
         self.assertEqual(parse("sshd", raw), "198.51.100.2")
@@ -219,6 +225,13 @@ class ParserTests(unittest.TestCase):
 
 
 class CollectorTests(unittest.TestCase):
+    def test_rootful_samba_and_exact_module_boundary(self):
+        samba = {"module": "samba1", "jail": "samba", "uid": "0", "uid_ranges": [(0, 1)]}
+        self.assertTrue(owns_record(samba, {"_UID": "0", "CONTAINER_NAME": "samba-dc"}))
+        other = {**samba, "jail": "gitea"}
+        self.assertTrue(owns_record(other, {"_UID": "0", "CONTAINER_NAME": "samba1-app"}))
+        self.assertFalse(owns_record(other, {"_UID": "0", "CONTAINER_NAME": "samba10-app"}))
+
     def test_rootless_container_journal_uses_module_subuids(self):
         source = {"module": "traefik1", "uid": "1001", "uid_ranges": [(1001, 1002), (100000, 165536)]}
         for uid in (1001, 100000, 165535):
@@ -283,6 +296,8 @@ class ConfigurationTests(unittest.TestCase):
         settings = validate({"mode": "coordinator", "public_url": "https://bans.example.org", "notifications": {"enabled": False}}, {})
         self.assertGreaterEqual(len(settings["sync_token"]), 32)
         self.assertEqual(validate({"mode": "coordinator", "public_url": "https://bans.example.org", "notifications": {}}, settings)["sync_token"], settings["sync_token"])
+        settings["notifications"]["token"] = "saved-token"
+        self.assertEqual(validate({"mode": "coordinator", "public_url": "https://bans.example.org", "notifications": {}}, settings)["notifications"]["token"], "saved-token")
 
     def test_notification_has_all_requested_fields(self):
         body = message({"ip": "198.51.100.2", "since": "2026-09-23T12:00:00Z", "jail": "gitea", "node": "example-node", "module": "example-module", "matches": "Wrong password"})

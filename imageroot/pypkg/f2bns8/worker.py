@@ -5,7 +5,7 @@ import subprocess
 import threading
 import time
 from . import firewall
-from .common import config, networks, now, state_dir
+from .common import config, networks, now, read_json, state_dir
 from .node import Node
 from .transport import call
 
@@ -40,29 +40,45 @@ def reconcile_engine(node):
     wanted = {ban["ip"] for ban in node.bans()}
     status = control(["status"])
     jails = next((item[1] for item in status if "Jail list" in item[0]), "")
-    for jail in jails.split(","):
-        jail = jail.strip()
-        if not jail:
-            continue
-        for ip in control(["get", jail, "banip"]):
+    desired = node.snapshot()["whitelist"]
+    names = [jail.strip() for jail in jails.split(",") if jail.strip()]
+    commands = [["get", jail, key] for jail in names for key in ("banip", "ignoreip")]
+    values = control({"batch": commands}) if commands else []
+    changes = []
+    for index, jail in enumerate(names):
+        for ip in values[2 * index]:
             if ip not in wanted:
-                control(["set", jail, "unbanip", ip])
-        current = networks(control(["get", jail, "ignoreip"]))
-        desired = node.snapshot()["whitelist"]
+                changes.append(["set", jail, "unbanip", ip])
+        current = networks(values[2 * index + 1])
         for ip in current:
             if ip not in desired:
-                control(["set", jail, "delignoreip", ip])
+                changes.append(["set", jail, "delignoreip", ip])
         for ip in desired:
             if ip not in current:
-                control(["set", jail, "addignoreip", ip])
+                changes.append(["set", jail, "addignoreip", ip])
+    if changes:
+        control({"batch": changes})
+
+
+def consume_engine(node):
+    for path in sorted((state_dir() / "engine" / "outbox").glob("*.json")):
+        event = read_json(path)
+        if event:
+            node.ban(event["ip"], event["jail"], event["module"], event["node"],
+                     event["matches"], event["notify"])
+        path.unlink()
 
 
 def main():
     settings = config()
     node = Node(state_dir() / "node.sqlite3")
     threading.Thread(target=sync_loop, args=(node, settings), daemon=True).start()
-    last_engine, last_firewall, previous = 0, 0, None
+    last_engine, last_firewall, previous, engine_revision = 0, 0, None, None
     while True:
+        try:
+            consume_engine(node)
+        except Exception as error:
+            node.set("engine_status", {"ok": False, "error": str(error)[:500]})
         try:
             ips = sorted(b["ip"] for b in node.bans())
             # Reapply periodically to recover from an external firewall reset.
@@ -72,10 +88,12 @@ def main():
                 node.set("firewall_status", {"ok": True, "updated": now(), "count": len(ips), "error": ""})
         except Exception as error:
             node.set("firewall_status", {"ok": False, "error": str(error)[:500]})
-        if time.monotonic() - last_engine > 5:
+        revision = node.snapshot()["revision"]
+        if revision != engine_revision or time.monotonic() - last_engine > 60:
             try:
                 reconcile_engine(node)
                 node.set("engine_status", {"ok": True, "error": ""})
+                engine_revision = revision
             except Exception as error:
                 node.set("engine_status", {"ok": False, "error": str(error)[:500]})
             last_engine = time.monotonic()

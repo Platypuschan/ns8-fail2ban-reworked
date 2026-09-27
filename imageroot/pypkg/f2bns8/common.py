@@ -1,6 +1,7 @@
 """Validation and durable local storage. No third-party dependencies."""
 
 import contextlib
+import functools
 import ipaddress
 import json
 import os
@@ -51,14 +52,16 @@ def atomic_json(path, value):
 
 
 @contextlib.contextmanager
-def database(path):
+def database(path, write=True):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
+    new = not Path(path).exists()
     db = sqlite3.connect(str(path), timeout=15, isolation_level=None)
-    os.chmod(path, 0o600)
+    if write:
+        os.chmod(path, 0o600)
     db.row_factory = sqlite3.Row
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA synchronous=FULL")
-    db.execute("BEGIN IMMEDIATE")
+    if new:
+        db.execute("PRAGMA journal_mode=WAL")
+    db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
     try:
         yield db
         db.execute("COMMIT")
@@ -102,9 +105,14 @@ def networks(values):
     return sorted(canonical)
 
 
+@functools.lru_cache(maxsize=32)
+def _parsed_networks(whitelist):
+    return tuple(ipaddress.ip_network(n) for n in whitelist)
+
+
 def allowed(ip, whitelist):
     item = ipaddress.ip_address(address(ip))
-    return any(item in ipaddress.ip_network(n) for n in whitelist)
+    return any(item in net for net in _parsed_networks(tuple(whitelist)))
 
 
 def url(value, https_only=True):
