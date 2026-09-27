@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 import re
-import socket
 import sqlite3
 import subprocess
 import tempfile
@@ -198,10 +197,14 @@ def _local_protection(bucket):
     try:
         host = urlsplit(settings.get("sync_url") or settings.get("public_url", "")).hostname
         if host:
-            for entry in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM):
-                ip = address(entry[4][0])
+            # The boot-time firewall runs before networking. Bound DNS lookup
+            # so a missing resolver never delays boot or ban restoration.
+            answer = subprocess.run(["getent", "ahosts", host], capture_output=True,
+                                    text=True, timeout=2)
+            for line in answer.stdout.splitlines():
+                ip = address(line.split()[0])
                 result.add(ip + ("/32" if ":" not in ip else "/128"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, subprocess.TimeoutExpired, IndexError):
         pass
     return tuple(sorted(result))
 

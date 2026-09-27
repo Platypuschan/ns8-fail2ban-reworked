@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import threading
 import time
@@ -194,6 +195,15 @@ class SurfaceTests(unittest.TestCase):
         self.assertIn("192.0.2.10/32", protected)
         self.assertIn("10.5.4.0/24", protected)
         self.assertNotIn("0.0.0.0/0", protected)
+
+    def test_boot_protection_bounds_dns_lookup(self):
+        interfaces = [{"ifname": "eth0", "addr_info": [{"local": "192.0.2.10", "prefixlen": 24}]}]
+        with patch("f2bns8.common.subprocess.run") as run, \
+                patch("f2bns8.common.config", return_value={"sync_url": "https://bans.example.org"}):
+            run.side_effect = [type("Result", (), {"stdout": json.dumps(interfaces)})(),
+                               subprocess.TimeoutExpired(["getent"], 2)]
+            self.assertIn("192.0.2.10/32", _local_protection(time.monotonic()))
+            self.assertEqual(run.call_args.kwargs["timeout"], 2)
 
     @patch.dict(os.environ, {"MODULE_ID": "fail2ban1", "TCP_PORT": "20001"})
     def test_failed_first_configuration_is_rolled_back(self):
