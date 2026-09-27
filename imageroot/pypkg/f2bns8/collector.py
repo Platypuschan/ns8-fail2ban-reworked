@@ -57,8 +57,19 @@ def discover():
             ranges = [(uid, uid + 1)]
             if uid:
                 ranges += subuids.get(module, []) + subuids.get(str(uid), [])
-            found.append({"module": module, "jail": kind, "uid": str(uid),
-                "uid_ranges": ranges, "environment": env})
+            source = {"module": module, "jail": kind, "uid": str(uid),
+                "uid_ranges": ranges, "environment": env}
+            if kind == "samba" and uid == 0:
+                try:
+                    source["container_id"] = run_module(module, ["podman", "inspect",
+                        "samba-dc", "--format", "{{.Id}}"]).strip()
+                except (subprocess.SubprocessError, OSError):
+                    source["container_id"] = ""
+            found.append(source)
+    rootful_samba = [source for source in found if source["jail"] == "samba" and source["uid"] == "0"]
+    if len(rootful_samba) > 1:
+        for source in rootful_samba:
+            source["ambiguous_samba"] = True
     return found
 
 
@@ -74,8 +85,13 @@ def owns_record(source, record):
     # Rootful Samba uses the fixed container name, while other rootful
     # instances use an exact name or a name separated by a dash.
     name = record.get("CONTAINER_NAME", "")
-    return (name == "samba-dc" if source["jail"] == "samba" else
-            name == source["module"] or name.startswith(source["module"] + "-"))
+    if source["jail"] == "samba":
+        observed = record.get("CONTAINER_ID_FULL", record.get("CONTAINER_ID", ""))
+        expected = source.get("container_id", "")
+        if observed and expected:
+            return expected.startswith(observed) or observed.startswith(expected)
+        return name == "samba-dc" and not source.get("ambiguous_samba", False)
+    return name == source["module"] or name.startswith(source["module"] + "-")
 
 
 def samba_logging(source):

@@ -149,6 +149,8 @@ def _local_networks(interval):
     for interface in interfaces:
         for item in interface.get("addr_info", []):
             try:
+                if item.get("temporary") or "temporary" in item.get("flags", []):
+                    continue
                 ip = ipaddress.ip_address(item["local"].split("%", 1)[0])
                 if not ip.is_loopback and not ip.is_unspecified:
                     addresses.append(str(ipaddress.ip_network((ip, ip.max_prefixlen))))

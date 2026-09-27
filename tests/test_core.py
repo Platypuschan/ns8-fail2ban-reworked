@@ -11,7 +11,7 @@ import uuid
 from urllib.error import HTTPError
 
 from f2bns8.common import address, allowed, atomic_json, database, networks, public_host
-from f2bns8.collector import Collector, owns_record
+from f2bns8.collector import Collector, owns_record, restore_samba_logging, samba_logging
 from f2bns8.node import Node
 from f2bns8.registry import Registry
 from f2bns8.transport import make_server, request
@@ -321,6 +321,19 @@ class ParserTests(unittest.TestCase):
 
 
 class CollectorTests(unittest.TestCase):
+    def test_samba_live_audit_level_is_restored_on_removal(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"F2B_STATE_DIR": directory}), \
+                patch("f2bns8.collector.run_module") as run, \
+                patch("f2bns8.collector.subprocess.run") as process:
+            samba_logging({"module": "samba1", "environment": {"SAMBA_LOGLEVEL": "1 auth_json_audit:0"}})
+            self.assertNotIn("set_env", str(run.call_args_list))
+            self.assertIn("auth_json_audit:2", str(run.call_args))
+            process.return_value.returncode = 0
+            process.return_value.stdout = "samba-dc\n"
+            restore_samba_logging()
+            self.assertIn("1 auth_json_audit:0", str(run.call_args))
+            self.assertFalse((Path(directory) / "samba-levels.json").exists())
+
     def test_one_ssh_connection_does_not_count_multiple_log_lines(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"F2B_STATE_DIR": directory}):
             collector = Collector()
@@ -338,6 +351,10 @@ class CollectorTests(unittest.TestCase):
     def test_rootful_samba_and_exact_module_boundary(self):
         samba = {"module": "samba1", "jail": "samba", "uid": "0", "uid_ranges": [(0, 1)]}
         self.assertTrue(owns_record(samba, {"_UID": "0", "CONTAINER_NAME": "samba-dc"}))
+        source = {**samba, "container_id": "a" * 64, "ambiguous_samba": True}
+        self.assertTrue(owns_record(source, {"_UID": "0", "CONTAINER_NAME": "samba-dc", "CONTAINER_ID_FULL": "a" * 64}))
+        self.assertFalse(owns_record(source, {"_UID": "0", "CONTAINER_NAME": "samba-dc", "CONTAINER_ID_FULL": "b" * 64}))
+        self.assertFalse(owns_record(source, {"_UID": "0", "CONTAINER_NAME": "samba-dc"}))
         other = {**samba, "jail": "gitea"}
         self.assertTrue(owns_record(other, {"_UID": "0", "CONTAINER_NAME": "samba1-app"}))
         self.assertFalse(owns_record(other, {"_UID": "0", "CONTAINER_NAME": "samba10-app"}))
