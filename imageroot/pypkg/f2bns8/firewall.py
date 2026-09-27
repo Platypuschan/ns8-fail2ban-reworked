@@ -48,7 +48,7 @@ def apply(module, addresses):
             f"hook {hook} priority -20" in listed.stdout
             for hook in ("input", "output", "forward"))
         healthy = healthy and all(
-            line.split(" counter drop")[0] in listed.stdout
+            line.split(" ", 5)[5].split(" counter drop")[0] in listed.stdout
             for line in expected.splitlines() if line.startswith("add rule "))
         if not healthy and listed.returncode == 0:
             # One atomic nft batch replaces the damaged table and its sets.
