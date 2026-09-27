@@ -1,6 +1,7 @@
 import concurrent.futures
 from datetime import datetime, timezone
 import json
+import sqlite3
 from pathlib import Path
 import tempfile
 import threading
@@ -9,7 +10,7 @@ from unittest.mock import patch
 import uuid
 from urllib.error import HTTPError
 
-from f2bns8.common import address, atomic_json, database, networks, public_host
+from f2bns8.common import address, allowed, atomic_json, database, networks, public_host
 from f2bns8.collector import Collector, owns_record
 from f2bns8.node import Node
 from f2bns8.registry import Registry
@@ -36,7 +37,7 @@ class RegistryTests(unittest.TestCase):
 
     def sync(self, node):
         state = node.snapshot()
-        result = self.registry.sync(self.ids[node], "NS8 / fail2ban1", state["revision"], state["identity"], node.pending())
+        result = self.registry.sync(self.ids[node], "NS8 / fail2ban1", state["revision"], state["identity"], node.pending(), delta_supported=True)
         node.apply(result)
         return result
 
@@ -176,10 +177,34 @@ class RegistryTests(unittest.TestCase):
         result = self.sync(self.a)
         self.assertTrue(result["unchanged"])
         self.assertNotIn("bans", result)
+        state = self.a.snapshot()
+        legacy = self.registry.sync(self.ids[self.a], "old peer", state["revision"], state["identity"], [])
+        self.assertIn("bans", legacy)
 
     def test_local_address_is_protected_before_first_sync(self):
         with patch("f2bns8.node.protected_networks", return_value=["198.51.100.23/32"]):
             self.assertIsNone(self.ban(self.a))
+
+    def test_legacy_event_rows_are_migrated_without_permanent_growth(self):
+        path = self.root / "legacy.db"
+        with sqlite3.connect(path) as db:
+            db.execute("CREATE TABLE events (id TEXT PRIMARY KEY, result TEXT NOT NULL)")
+            db.execute("INSERT INTO events VALUES (?,?)", (str(uuid.uuid4()), '{}'))
+        Registry(path)
+        with database(path, write=False) as db:
+            self.assertIn("node", [row[1] for row in db.execute("PRAGMA table_info(events)")])
+            self.assertEqual(db.execute("SELECT count(*) FROM events").fetchone()[0], 0)
+
+    def test_stale_peer_and_its_unacknowledged_events_are_pruned(self):
+        self.ban(self.a)
+        self.sync(self.a)
+        with database(self.registry.path) as db:
+            db.execute("UPDATE nodes SET seen='2020-01-01T00:00:00+00:00' WHERE id=?", (self.ids[self.a],))
+        state = self.b.snapshot()
+        self.registry.sync(self.ids[self.b], "active peer", state["revision"], state["identity"], [])
+        with database(self.registry.path, write=False) as db:
+            self.assertFalse(db.execute("SELECT 1 FROM nodes WHERE id=?", (self.ids[self.a],)).fetchone())
+            self.assertEqual(db.execute("SELECT count(*) FROM events WHERE node=?", (self.ids[self.a],)).fetchone()[0], 0)
 
     def test_coordinator_identity_and_rollback_are_detected(self):
         with self.assertRaisesRegex(ValueError, "identity"):
@@ -360,6 +385,8 @@ class ConfigurationTests(unittest.TestCase):
                 configure({"mode": "coordinator", "public_url": "https://bans.example.org"})
             destroy.assert_called_once()
             self.assertFalse((Path(directory) / "config.json").exists())
+            self.assertFalse((Path(directory) / "node.sqlite3").exists())
+            self.assertFalse((Path(directory) / "coordinator.sqlite3").exists())
 
     def test_whitelist_ranges(self):
         self.assertEqual(networks(["192.0.2.1-192.0.2.2"]), ["192.0.2.1/32", "192.0.2.2/32"])
@@ -369,6 +396,10 @@ class ConfigurationTests(unittest.TestCase):
         for value in ("192.0.2.1 # comment", "192.0.2.1;touch /tmp/bad", "fe80::1%eth0"):
             with self.assertRaises(ValueError):
                 networks([value])
+        self.assertTrue(allowed("198.51.100.2", ["198.51.100.0/24", "2001:db8::/32"]))
+        self.assertTrue(allowed("2001:db8::1", ["198.51.100.0/24", "2001:db8::/32"]))
+        self.assertFalse(allowed("198.51.101.2", ["198.51.100.0/24", "2001:db8::/32"]))
+        self.assertFalse(allowed("2001:db9::1", ["198.51.100.0/24", "2001:db8::/32"]))
 
     def test_public_url_has_no_database_port(self):
         self.assertEqual(public_host("https://bans.example.org"), "bans.example.org")

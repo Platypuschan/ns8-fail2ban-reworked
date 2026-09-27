@@ -25,6 +25,12 @@ scopes. This project targets NS8, including separate NS8 installations.
   new local bans immediately, and queues them for synchronization. Connected
   nodes poll every three seconds. An unreachable node learns changes when it
   reconnects; global manual operations require the coordinator to be reachable.
+- Connected peers receive only changed bans and policy updates. Large initial
+  state transfers are paged. Acknowledged event records and peers unseen for
+  90 days are removed from the coordinator database; a returning peer can still
+  resynchronize from the coordinator. Permanent unban and whitelist revocation
+  markers are retained so arbitrarily delayed offline events cannot resurrect
+  previously cleared bans. Consequently, those markers can grow over time.
 - Manual unban tombstones and whitelist history prevent delayed messages from
   resurrecting obsolete bans. New failures **after** the node learns of a manual
   unban can trigger a new ban. Retried sync events are idempotent.
@@ -52,6 +58,8 @@ scopes. This project targets NS8, including separate NS8 installations.
    to the coordinator**, enter its URL and token, and save. Public HTTPS must
    have a certificate trusted by those nodes. The coordinator itself uses its
    private loopback endpoint automatically.
+   Invalid token attempts are logged and throttled; valid peers remain able to
+   connect during a burst of invalid attempts.
 4. Enter whitelist addresses or ranges, one per line. IPv4, IPv6, CIDR and
    `first-last` ranges are supported. Whitelist edits apply to the shared list
    and clear matching bans. Concurrent edits require a refresh before overwriting

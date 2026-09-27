@@ -23,6 +23,10 @@ class Registry:
             db.execute("CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, result TEXT NOT NULL, node TEXT NOT NULL DEFAULT '')")
             if "node" not in {row[1] for row in db.execute("PRAGMA table_info(events)")}:
                 db.execute("ALTER TABLE events ADD COLUMN node TEXT NOT NULL DEFAULT ''")
+                # Old rows cannot be acknowledged by node ID. A replay still
+                # resolves against the active ban and permanent revocation
+                # markers, so they need not remain in the live event table.
+                db.execute("DELETE FROM events WHERE node=''")
             db.execute("CREATE TABLE IF NOT EXISTS nodes (id TEXT PRIMARY KEY, name TEXT NOT NULL, seen TEXT NOT NULL, revision INTEGER NOT NULL, protected TEXT NOT NULL DEFAULT '[]')")
             if "protected" not in {row[1] for row in db.execute("PRAGMA table_info(nodes)")}:
                 db.execute("ALTER TABLE nodes ADD COLUMN protected TEXT NOT NULL DEFAULT '[]'")
@@ -72,7 +76,7 @@ class Registry:
         return sorted({net for row in db.execute("SELECT protected FROM nodes")
             for net in json.loads(row[0])})
 
-    def sync(self, node, name, revision, identity, events, protected=None, acks=None):
+    def sync(self, node, name, revision, identity, events, protected=None, acks=None, delta_supported=False):
         uuid.UUID(node)
         if not isinstance(revision, int) or revision < 0 or not isinstance(events, list) or len(events) > 100:
             raise ValueError("Invalid sync request")
@@ -144,10 +148,10 @@ class Registry:
                 results.append(result)
             db.execute("INSERT INTO nodes(id,name,seen,revision,protected) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,seen=excluded.seen,revision=excluded.revision,protected=excluded.protected", (node, safe_text(name, 256), now(), revision, json.dumps(protected)))
             current_revision = int(db.execute("SELECT value FROM meta WHERE key='revision'").fetchone()[0])
-            if revision == current_revision and protected == old_protected and not results:
+            if delta_supported and revision == current_revision and protected == old_protected and not results:
                 return {"identity": meta["identity"], "revision": revision,
                         "unchanged": True, "results": []}
-            if identity:
+            if identity and delta_supported:
                 return {**self._delta(db, revision), "results": results}
             return {**self._snapshot(db), "results": results}
 
@@ -164,7 +168,7 @@ class Registry:
     def set_whitelist(self, values, expected_revision):
         # A host-wide ban on loopback would break the coordinator and other NS8
         # services. These two local-only networks are therefore invariant.
-        values = networks(networks(values) + list(LOOPBACKS))
+        values = sorted(set(networks(values)) | set(LOOPBACKS))
         with database(self.path) as db:
             meta = self._meta(db)
             if expected_revision != int(meta["whitelist_revision"]):

@@ -112,6 +112,8 @@ def backup():
     root = state_dir()
     target = root / "backup"
     target.mkdir(exist_ok=True)
+    if config().get("mode") != "coordinator":
+        (target / "coordinator.sqlite3").unlink(missing_ok=True)
     for name in ("node", "coordinator"):
         if name == "coordinator" and config().get("mode") != "coordinator":
             continue
@@ -128,14 +130,19 @@ def backup():
 
 def restore(clone=False):
     root = state_dir()
+    settings = config()
     for path in (root / "backup").glob("*.sqlite3"):
+        if path.name == "coordinator.sqlite3" and (clone or settings.get("mode") != "coordinator"):
+            continue
         for suffix in ("", "-wal", "-shm"):
             (root / (path.name + suffix)).unlink(missing_ok=True)
         shutil.copyfile(path, root / path.name)
         os.chmod(root / path.name, 0o600)
-    settings = config()
     if not settings:
         return
+    if settings["mode"] != "coordinator" or clone:
+        for suffix in ("", "-wal", "-shm"):
+            (root / ("coordinator.sqlite3" + suffix)).unlink(missing_ok=True)
     settings["port"] = int(os.environ["TCP_PORT"])
     if clone:
         # A second authority with copied state would fork the common ban list.

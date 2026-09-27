@@ -89,7 +89,13 @@ def configure(data):
             try:
                 lifecycle.destroy()
             finally:
-                (state_dir() / "config.json").unlink(missing_ok=True)
+                root = state_dir()
+                (root / "config.json").unlink(missing_ok=True)
+                for name in ("node.sqlite3", "coordinator.sqlite3", "engine/fail2ban.sqlite3"):
+                    for suffix in ("", "-wal", "-shm"):
+                        (root / (name + suffix)).unlink(missing_ok=True)
+                for event in (root / "engine/outbox").glob("*.json"):
+                    event.unlink(missing_ok=True)
                 if settings["mode"] == "coordinator":
                     with contextlib.suppress(Exception):
                         lifecycle.route(settings, delete=True)

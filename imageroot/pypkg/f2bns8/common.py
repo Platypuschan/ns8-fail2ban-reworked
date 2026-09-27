@@ -1,6 +1,7 @@
 """Validation and durable local storage. No third-party dependencies."""
 
 import contextlib
+from bisect import bisect_right
 import functools
 import ipaddress
 import json
@@ -110,12 +111,25 @@ def networks(values):
 
 @functools.lru_cache(maxsize=32)
 def _parsed_networks(whitelist):
-    return tuple(ipaddress.ip_network(n) for n in whitelist)
+    result = []
+    for version in (4, 6):
+        spans = sorted((int(net.network_address), int(net.broadcast_address))
+            for value in whitelist if (net := ipaddress.ip_network(value)).version == version)
+        merged = []
+        for start, end in spans:
+            if merged and start <= merged[-1][1] + 1:
+                merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+            else:
+                merged.append((start, end))
+        result.append((tuple(start for start, _ in merged), tuple(end for _, end in merged)))
+    return tuple(result)
 
 
 def allowed(ip, whitelist):
     item = ipaddress.ip_address(address(ip))
-    return any(item in net for net in _parsed_networks(tuple(whitelist)))
+    starts, ends = _parsed_networks(tuple(whitelist))[0 if item.version == 4 else 1]
+    pos = bisect_right(starts, int(item)) - 1
+    return pos >= 0 and int(item) <= ends[pos]
 
 
 @functools.lru_cache(maxsize=2)

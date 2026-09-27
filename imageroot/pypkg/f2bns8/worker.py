@@ -4,6 +4,7 @@ import os
 import subprocess
 import threading
 import time
+from datetime import datetime, timezone
 from . import firewall
 from .common import config, networks, now, protected_networks, read_json, state_dir
 from .node import Node
@@ -24,10 +25,18 @@ def synchronize(node, settings):
         "identity": snapshot["identity"], "revision": snapshot["revision"],
         "protected": protected_networks(),
         "acks": acks,
+        "delta_supported": True,
         "events": [{k: v for k, v in event.items() if k != "matches"} for event in node.pending()]})
     node.apply(result)
     node.confirm_acknowledgments(acks)
-    node.set("sync_status", {"ok": True, "last_success": now(), "error": ""})
+    old = node.get("sync_status", {})
+    last = old.get("last_success", "")
+    try:
+        elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds()
+    except (ValueError, TypeError):
+        elapsed = 60
+    if not old.get("ok") or elapsed >= 30:
+        node.set("sync_status", {"ok": True, "last_success": now(), "error": ""})
 
 
 def sync_loop(node, settings):
@@ -45,7 +54,7 @@ def reconcile_engine(node):
     status = control(["status"])
     jails = next((item[1] for item in status if "Jail list" in item[0]), "")
     snapshot = node.snapshot()
-    desired = networks(snapshot["whitelist"] + snapshot.get("protected", []) + protected_networks())
+    desired = sorted(set(snapshot["whitelist"] + snapshot.get("protected", []) + protected_networks()))
     names = [jail.strip() for jail in jails.split(",") if jail.strip()]
     commands = [["get", jail, key] for jail in names for key in ("banip", "ignoreip")]
     values = control({"batch": commands}) if commands else []

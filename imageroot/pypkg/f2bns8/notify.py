@@ -33,11 +33,18 @@ def deliver(settings, event):
 
 def main():
     node = Node(state_dir() / "node.sqlite3")
+    disabled_cleared = False
     while True:
         settings = config().get("notifications", {})
-        with database(node.path, write=not settings.get("enabled")) as db:
-            if not settings.get("enabled"):
-                db.execute("DELETE FROM notifications")
+        if not settings.get("enabled"):
+            if not disabled_cleared:
+                with database(node.path) as db:
+                    db.execute("DELETE FROM notifications")
+                disabled_cleared = True
+            time.sleep(1)
+            continue
+        disabled_cleared = False
+        with database(node.path, write=False) as db:
             row = db.execute("SELECT * FROM notifications WHERE retry_after<=? ORDER BY rowid LIMIT 1", (time.time(),)).fetchone()
         if row:
             try:

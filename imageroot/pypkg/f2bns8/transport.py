@@ -25,7 +25,8 @@ class NoRedirects(HTTPRedirectHandler):
 def request(base, token, path, data=None):
     payload = None if data is None else json.dumps(data).encode()
     req = Request(base.rstrip("/") + path, data=payload,
-                  headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+                  headers={"Authorization": "Bearer " + token, "Content-Type": "application/json",
+                           "X-F2B-Paging": "1"})
     with build_opener(NoRedirects).open(req, timeout=10) as response:
         raw = response.read(16 * 1024 * 1024 + 1)
         if len(raw) > 16 * 1024 * 1024:
@@ -75,7 +76,7 @@ def make_server(registry, token, port=0):
 
         def respond(self, status, body):
             payload = json.dumps(body).encode()
-            if len(payload) > 2 * 1024 * 1024:
+            if self.headers.get("X-F2B-Paging") == "1" and len(payload) > 2 * 1024 * 1024:
                 cursor = secrets.token_urlsafe(24)
                 with pages_lock:
                     for key, (stream, seen, _) in list(pages.items()):
@@ -153,7 +154,7 @@ def make_server(registry, token, port=0):
                     return self.respond(413, {"error": "Invalid request size"})
                 data = json.loads(self.rfile.read(length))
                 if self.path == "/v1/sync":
-                    result = registry.sync(data["node"], data["name"], data["revision"], data.get("identity", ""), data["events"], data.get("protected", []), data.get("acks", []))
+                    result = registry.sync(data["node"], data["name"], data["revision"], data.get("identity", ""), data["events"], data.get("protected", []), data.get("acks", []), data.get("delta_supported", False))
                 elif self.path == "/v1/unban":
                     result = registry.unban(data["ips"])
                 elif self.path == "/v1/whitelist":
