@@ -57,8 +57,19 @@ def discover():
             ranges = [(uid, uid + 1)]
             if uid:
                 ranges += subuids.get(module, []) + subuids.get(str(uid), [])
-            found.append({"module": module, "jail": kind, "uid": str(uid),
-                "uid_ranges": ranges, "environment": env})
+            source = {"module": module, "jail": kind, "uid": str(uid),
+                "uid_ranges": ranges, "environment": env}
+            if kind == "samba" and uid == 0:
+                try:
+                    source["container_id"] = run_module(module, ["podman", "inspect",
+                        "samba-dc", "--format", "{{.Id}}"]).strip()
+                except (subprocess.SubprocessError, OSError):
+                    source["container_id"] = ""
+            found.append(source)
+    rootful_samba = [source for source in found if source["jail"] == "samba" and source["uid"] == "0"]
+    if len(rootful_samba) > 1:
+        for source in rootful_samba:
+            source["ambiguous_samba"] = True
     return found
 
 
@@ -71,19 +82,47 @@ def owns_record(source, record):
         return False
     if source["uid"] != "0":
         return True
-    return record.get("CONTAINER_NAME", "").startswith(source["module"])
+    # Rootful Samba uses the fixed container name, while other rootful
+    # instances use an exact name or a name separated by a dash.
+    name = record.get("CONTAINER_NAME", "")
+    if source["jail"] == "samba":
+        observed = record.get("CONTAINER_ID_FULL", record.get("CONTAINER_ID", ""))
+        expected = source.get("container_id", "")
+        if observed and expected:
+            return expected.startswith(observed) or observed.startswith(expected)
+        return name == "samba-dc" and not source.get("ambiguous_samba", False)
+    return name == source["module"] or name.startswith(source["module"] + "-")
 
 
 def samba_logging(source):
-    """Persist audit failures and apply the level live without restarting Samba."""
+    """Apply auditing live and remember the saved level for removal."""
     module = source["module"]
     old = source["environment"].get("SAMBA_LOGLEVEL", "1 auth_audit:0 auth_json_audit:0")
     level = re.search(r"(?:^|\s)auth_json_audit:(\d+)(?:\s|$)", old)
     new = old if level and int(level[1]) >= 2 else re.sub(r"(?:^|\s)auth_json_audit:\S+", "", old) + " auth_json_audit:2"
+    # Apply this only to the running process. Persisting the environment would
+    # change Samba's settings permanently after this module is removed.
     if new != old:
-        run_module(module, ["python3", "-c", "import agent,json,sys; agent.set_env('SAMBA_LOGLEVEL',json.load(sys.stdin)); agent.dump_env()"], input=json.dumps(new))
-    # The live debug command also covers an already running container with old env.
+        marker = state_dir() / "samba-levels.json"
+        levels = read_json(marker, {})
+        if module not in levels:
+            levels[module] = old
+            atomic_json(marker, levels)
     run_module(module, ["podman", "exec", "samba-dc", "smbcontrol", "all", "debug", new])
+
+
+def restore_samba_logging():
+    marker = state_dir() / "samba-levels.json"
+    levels = read_json(marker, {})
+    for module, level in list(levels.items()):
+        running = subprocess.run(["runagent", "-m", module, "podman", "ps",
+            "--filter", "name=^samba-dc$", "--format", "{{.Names}}"],
+            text=True, capture_output=True, timeout=30)
+        if running.returncode == 0 and "samba-dc" in running.stdout.splitlines():
+            run_module(module, ["podman", "exec", "samba-dc", "smbcontrol", "all", "debug", level])
+        del levels[module]
+        atomic_json(marker, levels)
+    marker.unlink(missing_ok=True)
 
 
 def log_files(source):
@@ -108,6 +147,7 @@ class Collector:
         self.sources = []
         self.files = []
         self.last_save = 0
+        self.ssh_sessions = {}
         (self.root / "logs").mkdir(exist_ok=True)
 
     def refresh(self):
@@ -145,6 +185,7 @@ class Collector:
             os.replace(path, path.with_suffix(".log.1"))
         with path.open("a") as stream:
             stream.write(stamp + " " + ip + " " + record + "\n")
+        os.chmod(path, 0o644)  # Engine reads only the dedicated log mount.
         self.node.set("last_detection", {"jail": jail, "module": module, "time": now()})
 
     def journal(self, record):
@@ -154,8 +195,26 @@ class Collector:
         if not isinstance(message, str):
             return
         when = int(record.get("__REALTIME_TIMESTAMP", "0")) / 1000000
-        if record.get("_SYSTEMD_UNIT") in ("sshd.service", "ssh.service") or record.get("SYSLOG_IDENTIFIER") == "sshd":
-            self.emit("sshd", "host", message, when)
+        unit = record.get("_SYSTEMD_UNIT", "")
+        if unit in ("sshd.service", "ssh.service") or unit.startswith(("sshd@", "ssh@")) and unit.endswith(".service") or record.get("SYSLOG_IDENTIFIER") == "sshd":
+            ip = parse("sshd", message)
+            port = re.search(r"\bport (\d+)(?:\s|$)", message)
+            key = (record.get("_PID", record.get("SYSLOG_PID", "")), ip, port[1] if port else "")
+            if ip:
+                old = self.ssh_sessions.get(key)
+                previous = old[0] if old and when - old[1] < 600 else None
+                category = "invalid" if "Invalid user " in message else (
+                    "closed" if "Connection closed by invalid user " in message else (
+                    "maximum" if "maximum authentication attempts exceeded " in message else "failed"))
+                # sshd emits several lines for one rejected connection. Count
+                # an invalid user and its first failure/closure only once.
+                duplicate = category in ("closed", "maximum") and previous is not None
+                duplicate = duplicate or category == "failed" and previous == "invalid"
+                if not duplicate:
+                    self.emit("sshd", "host", message, when)
+                self.ssh_sessions[key] = ("failed" if category == "failed" else category, when)
+                if len(self.ssh_sessions) > 2048:
+                    self.ssh_sessions = {key: value for key, value in self.ssh_sessions.items() if when - value[1] < 600}
         else:
             for source in self.sources:
                 if source["jail"] == "organizr":
@@ -227,8 +286,19 @@ class Collector:
                         except (ValueError, TypeError):
                             pass
                 self.tail_files()
-                atomic_json(self.root / "collector.json", self.checkpoint)
-                self.node.set("collector_status", {"ok": True, "updated": now(), "error": ""})
+                if time.monotonic() - self.last_save >= 5:
+                    live_keys = set()
+                    for _, path in self.files:
+                        try:
+                            stat = path.stat()
+                            live_keys.add(str(stat.st_dev) + ":" + str(stat.st_ino))
+                        except FileNotFoundError:
+                            pass
+                    self.checkpoint["files"] = {k: v for k, v in self.checkpoint["files"].items() if k in live_keys}
+                    self.checkpoint["discarding"] = {k: v for k, v in self.checkpoint.get("discarding", {}).items() if k in live_keys}
+                    atomic_json(self.root / "collector.json", self.checkpoint)
+                    self.node.set("collector_status", {"ok": True, "updated": now(), "error": ""})
+                    self.last_save = time.monotonic()
                 if time.monotonic() - refreshed > 60:
                     self.refresh()
                     refreshed = time.monotonic()

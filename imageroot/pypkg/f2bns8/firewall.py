@@ -37,8 +37,26 @@ def rules(module, addresses, create):
 def apply(module, addresses):
     with (state_dir() / "firewall.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        exists = subprocess.run(["nft", "list", "table", "inet", table_name(module)], capture_output=True).returncode == 0
-        subprocess.run(["nft", "-f", "-"], input=rules(module, addresses, not exists), text=True, capture_output=True, check=True, timeout=15)
+        table = table_name(module)
+        listed = subprocess.run(["nft", "-a", "list", "table", "inet", table],
+            text=True, capture_output=True, timeout=15)
+        expected = rules(module, [], True)
+        healthy = listed.returncode == 0 and all(
+            f"set banned{version} {{" in listed.stdout for version in (4, 6))
+        healthy = healthy and all(
+            f"chain {hook} {{" in listed.stdout and
+            f"hook {hook} priority -20" in listed.stdout
+            for hook in ("input", "output", "forward"))
+        healthy = healthy and all(
+            line.split(" ", 5)[5].split(" counter drop")[0] in listed.stdout
+            for line in expected.splitlines() if line.startswith("add rule "))
+        if not healthy and listed.returncode == 0:
+            # One atomic nft batch replaces the damaged table and its sets.
+            script = f"delete table inet {table}\n" + rules(module, addresses, True)
+        else:
+            script = rules(module, addresses, not healthy)
+        subprocess.run(["nft", "-f", "-"], input=script, text=True,
+            capture_output=True, check=True, timeout=15)
 
 
 def remove(module):
