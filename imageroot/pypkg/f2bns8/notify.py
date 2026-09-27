@@ -7,6 +7,8 @@ from .common import config, database, now, state_dir
 from .node import Node
 from .transport import NoRedirects
 
+MAX_ATTEMPTS = 10
+
 
 def message(event):
     return ("Permanent IP ban\n\nAddress: " + event["ip"] + "\nTime: " + event["since"]
@@ -31,11 +33,18 @@ def deliver(settings, event):
 
 def main():
     node = Node(state_dir() / "node.sqlite3")
+    disabled_cleared = False
     while True:
         settings = config().get("notifications", {})
-        with database(node.path) as db:
-            if not settings.get("enabled"):
-                db.execute("DELETE FROM notifications")
+        if not settings.get("enabled"):
+            if not disabled_cleared:
+                with database(node.path) as db:
+                    db.execute("DELETE FROM notifications")
+                disabled_cleared = True
+            time.sleep(1)
+            continue
+        disabled_cleared = False
+        with database(node.path, write=False) as db:
             row = db.execute("SELECT * FROM notifications WHERE retry_after<=? ORDER BY rowid LIMIT 1", (time.time(),)).fetchone()
         if row:
             try:
@@ -44,10 +53,15 @@ def main():
                     db.execute("DELETE FROM notifications WHERE id=?", (row["id"],))
                 node.set("notification_status", {"ok": True, "last_success": now(), "error": ""})
             except Exception as error:
+                attempts = row["attempts"] + 1
                 delay = min(3600, 5 * 2 ** min(row["attempts"], 10))
                 with database(node.path) as db:
-                    db.execute("UPDATE notifications SET attempts=attempts+1,retry_after=? WHERE id=?", (time.time()+delay, row["id"]))
-                node.set("notification_status", {"ok": False, "error": str(error)[:500]})
+                    if attempts >= MAX_ATTEMPTS:
+                        db.execute("DELETE FROM notifications WHERE id=?", (row["id"],))
+                    else:
+                        db.execute("UPDATE notifications SET attempts=?,retry_after=? WHERE id=?", (attempts, time.time()+delay, row["id"]))
+                node.set("notification_status", {"ok": False, "error": str(error)[:500],
+                    "dropped": attempts >= MAX_ATTEMPTS, "event_id": row["id"]})
         time.sleep(1)
 
 
