@@ -159,11 +159,14 @@ def _local_networks(interval):
     return tuple(sorted(set(addresses)))
 
 
+def local_networks():
+    return list(_local_networks(int(time.monotonic() // 60)))
+
+
 def protected_networks():
     # Exact interface addresses are protected on every node. Additional VPN
     # ranges are explicitly configured by the administrator for this cluster.
-    return sorted(set(_local_networks(int(time.monotonic() // 60))
-        + tuple(config().get("protected_networks", []))))
+    return sorted(set(local_networks() + config().get("protected_networks", [])))
 
 
 def url(value, https_only=True):

@@ -497,6 +497,72 @@ class CollectorTests(unittest.TestCase):
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_first_configuration_enrolls_before_collection_can_start(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {
+            "F2B_STATE_DIR": directory, "MODULE_ID": "fail2ban1", "TCP_PORT": "20001"}), \
+                patch("f2bns8.actions.shutil.which", return_value="/usr/sbin/nft"), \
+                patch("f2bns8.actions.local_networks", return_value=[]), \
+                patch("f2bns8.actions.protected_networks", return_value=[]), \
+                patch("f2bns8.actions.lifecycle.route"), \
+                patch("f2bns8.actions.lifecycle.start") as start:
+            def collector_wins_startup_race(settings):
+                root = Path(directory)
+                node = Node(root / "node.sqlite3")
+                registry = Registry(root / "coordinator.sqlite3")
+                self.assertEqual(node.get("rebase_nonce"), "")
+                event = node.ban("198.51.100.23", "sshd", "host", "node", "failure")
+                state = node.snapshot()
+                result = registry.sync(settings["node_id"], settings["node_name"],
+                                       state["revision"], state["identity"], [event])
+                self.assertEqual(result["results"][0]["result"], "accepted")
+            start.side_effect = collector_wins_startup_race
+            configure({"mode": "coordinator", "public_url": "https://bans.example.org"})
+            start.assert_called_once()
+
+    def test_first_peer_configuration_aborts_if_enrollment_loses_connection(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {
+            "F2B_STATE_DIR": directory, "MODULE_ID": "fail2ban1", "TCP_PORT": "20001"}), \
+                patch("f2bns8.actions.shutil.which", return_value="/usr/sbin/nft"), \
+                patch("f2bns8.actions.local_networks", return_value=[]), \
+                patch("f2bns8.actions.protected_networks", return_value=[]), \
+                patch("f2bns8.actions.request", return_value=Registry(Path(directory) / "remote.db").snapshot()), \
+                patch("f2bns8.actions.call", side_effect=OSError("coordinator unavailable")), \
+                patch("f2bns8.actions.lifecycle.destroy"), \
+                patch("f2bns8.actions.lifecycle.start") as start:
+            with self.assertRaisesRegex(OSError, "coordinator unavailable"):
+                configure({"mode": "peer", "sync_url": "https://bans.example.org",
+                           "sync_token": "a" * 43})
+            start.assert_not_called()
+            self.assertFalse((Path(directory) / "config.json").exists())
+            self.assertFalse((Path(directory) / "node.sqlite3").exists())
+
+    def test_first_peer_configuration_finishes_enrollment_before_start(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as remote, \
+                patch.dict("os.environ", {"F2B_STATE_DIR": directory, "MODULE_ID": "fail2ban1",
+                                          "TCP_PORT": "20001"}), \
+                patch("f2bns8.actions.shutil.which", return_value="/usr/sbin/nft"), \
+                patch("f2bns8.actions.local_networks", return_value=[]), \
+                patch("f2bns8.actions.protected_networks", return_value=[]), \
+                patch("f2bns8.actions.lifecycle.start") as start:
+            registry = Registry(Path(remote) / "coordinator.db")
+            with patch("f2bns8.actions.request", return_value=registry.snapshot()), \
+                    patch("f2bns8.actions.call", side_effect=lambda settings, path, data:
+                          registry.sync(data["node"], data["name"], data["revision"],
+                                        data["identity"], data["events"], data["protected"],
+                                        delta_supported=data["delta_supported"],
+                                        rebase_ack=data["rebase_ack"])):
+                def check_enrollment(settings):
+                    self.assertEqual(Node(Path(directory) / "node.sqlite3").get("rebase_nonce"), "")
+                    with database(registry.path, write=False) as db:
+                        row = db.execute("SELECT rebase_nonce FROM nodes WHERE id=?",
+                                         (settings["node_id"],)).fetchone()
+                    self.assertIsNotNone(row)
+                    self.assertEqual(row[0], "")
+                start.side_effect = check_enrollment
+                configure({"mode": "peer", "sync_url": "https://bans.example.org",
+                           "sync_token": "a" * 43})
+                start.assert_called_once()
+
     def test_first_configuration_failure_cleans_up_written_settings(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {
             "F2B_STATE_DIR": directory, "MODULE_ID": "fail2ban1", "TCP_PORT": "20001"}), \
@@ -523,6 +589,18 @@ class ConfigurationTests(unittest.TestCase):
         self.assertTrue(allowed("2001:db8::1", ["198.51.100.0/24", "2001:db8::/32"]))
         self.assertFalse(allowed("198.51.101.2", ["198.51.100.0/24", "2001:db8::/32"]))
         self.assertFalse(allowed("2001:db9::1", ["198.51.100.0/24", "2001:db8::/32"]))
+
+    @patch.dict("os.environ", {"MODULE_ID": "fail2ban1", "TCP_PORT": "20001"})
+    def test_protected_range_limit_applies_after_expansion(self):
+        expanded = "2001:db8::1-2001:db8:ffff:ffff:ffff:ffff:ffff:fffe"
+        with patch("f2bns8.actions.local_networks", return_value=[]):
+            with self.assertRaisesRegex(ValueError, "after expanding"):
+                validate({"mode": "coordinator", "public_url": "https://bans.example.org",
+                          "protected_networks": [expanded]}, {})
+        with tempfile.TemporaryDirectory() as directory:
+            registry = Registry(Path(directory) / "registry.db")
+            with self.assertRaisesRegex(ValueError, "after expanding"):
+                registry.sync(str(uuid.uuid4()), "peer", 0, "", [], [expanded])
 
     def test_public_url_has_no_database_port(self):
         self.assertEqual(public_host("https://bans.example.org"), "bans.example.org")

@@ -131,6 +131,8 @@ class Registry:
             raise ValueError("Invalid rebase acknowledgment")
         acks = [str(uuid.UUID(item)) for item in (acks or [])]
         protected = networks(protected or [])
+        if len(protected) > 128:
+            raise ValueError("Too many protected networks after expanding ranges")
         if any(ipaddress.ip_network(value).prefixlen == 0 for value in protected):
             raise ValueError("Protected networks cannot include a default route")
         with database(self.path) as db:

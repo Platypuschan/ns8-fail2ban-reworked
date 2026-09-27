@@ -10,7 +10,7 @@ import socket
 import sys
 import uuid
 from urllib.error import HTTPError
-from .common import atomic_json, config, database, networks, public_host, protected_networks, state_dir, url
+from .common import atomic_json, config, database, local_networks, networks, public_host, protected_networks, state_dir, url
 from . import lifecycle
 from .node import Node
 from .registry import Registry
@@ -39,6 +39,10 @@ def validate(data, old):
     if not isinstance(protected, list) or len(protected) > 64:
         raise ValueError("Protect at most 64 additional host or VPN networks")
     settings["protected_networks"] = networks(protected)
+    if len(settings["protected_networks"]) > 64:
+        raise ValueError("Protect at most 64 networks after expanding address ranges")
+    if len(set(settings["protected_networks"] + local_networks())) > 128:
+        raise ValueError("Protect at most 128 local and configured networks in total")
     if any(ipaddress.ip_network(value).prefixlen == 0 for value in settings["protected_networks"]):
         raise ValueError("Do not protect the entire Internet; enter the cluster VPN subnet")
     notice = data.get("notifications", {})
@@ -60,6 +64,27 @@ def validate(data, old):
     return settings
 
 
+def enroll(node, settings):
+    # First configuration must register before the engine and collector start.
+    # A missing coordinator node record otherwise causes the first sync to
+    # discard bans detected during the startup race or a short outage.
+    registry = Registry(state_dir() / "coordinator.sqlite3") if settings["mode"] == "coordinator" else None
+    for _ in range(2):
+        snapshot = node.snapshot()
+        payload = {"node": settings["node_id"], "name": settings["node_name"],
+                   "revision": snapshot["revision"], "identity": snapshot["identity"],
+                   "events": [], "protected": protected_networks(),
+                   "delta_supported": True, "rebase_ack": node.get("rebase_nonce", "")}
+        response = (registry.sync(payload["node"], payload["name"], payload["revision"],
+                    payload["identity"], payload["events"], payload["protected"],
+                    delta_supported=True, rebase_ack=payload["rebase_ack"])
+                    if registry else call(settings, "/v1/sync", payload))
+        node.apply(response)
+        if not response.get("reset_pending"):
+            return
+    raise RuntimeError("Coordinator enrollment did not complete")
+
+
 def configure(data):
     if not shutil.which("nft"):
         raise RuntimeError("The NS8 host needs the nftables command (nft)")
@@ -78,6 +103,8 @@ def configure(data):
         if settings["mode"] == "coordinator":
             lifecycle.route(settings)
         atomic_json(state_dir() / "config.json", settings)
+        if not old:
+            enroll(node, settings)
         lifecycle.start(settings)
     except Exception:
         if old:

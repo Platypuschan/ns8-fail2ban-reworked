@@ -63,6 +63,8 @@ scopes. This project targets NS8, including separate NS8 installations.
    to the coordinator**, enter its URL and token, and save. Public HTTPS must
    have a certificate trusted by those nodes. The coordinator itself uses its
    private loopback endpoint automatically.
+   Initial setup registers the node before log collection starts; if the
+   coordinator is unreachable during registration, setup fails and can be retried.
    Invalid token attempts are logged and throttled; valid peers remain able to
    connect during a burst of invalid attempts.
 4. Enter whitelist addresses or ranges, one per line. IPv4, IPv6, CIDR and
