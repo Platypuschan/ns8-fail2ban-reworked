@@ -1,6 +1,7 @@
 """Validation and durable local storage. No third-party dependencies."""
 
 import contextlib
+import functools
 import ipaddress
 import json
 import os
@@ -13,6 +14,9 @@ from urllib.parse import urlsplit
 
 JAILS = ("sshd", "ns8", "gitea", "organizr", "samba")
 LOOPBACKS = ("127.0.0.0/8", "::1/128")
+# Every network becomes a Fail2ban ignoreip entry in each jail, so bound the
+# expanded list, not just the number of lines a user enters.
+MAX_NETWORKS = 4096
 
 
 def now():
@@ -51,14 +55,15 @@ def atomic_json(path, value):
 
 
 @contextlib.contextmanager
-def database(path):
+def database(path, readonly=False):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(str(path), timeout=15, isolation_level=None)
     os.chmod(path, 0o600)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA synchronous=FULL")
-    db.execute("BEGIN IMMEDIATE")
+    # WAL readers see a consistent snapshot without blocking writers.
+    db.execute("BEGIN" if readonly else "BEGIN IMMEDIATE")
     try:
         yield db
         db.execute("COMMIT")
@@ -81,8 +86,10 @@ def address(value):
 
 
 def networks(values):
-    if not isinstance(values, list) or len(values) > 4096:
+    if not isinstance(values, list):
         raise ValueError("Whitelist must be a list of addresses or ranges")
+    if len(values) > MAX_NETWORKS:
+        raise ValueError(f"Whitelist has more than {MAX_NETWORKS} entries")
     result = set()
     for value in values:
         if not isinstance(value, str) or "%" in value:
@@ -99,12 +106,26 @@ def networks(values):
         if isinstance(net, ipaddress.IPv6Network) and net.prefixlen >= 96 and net.network_address.ipv4_mapped:
             net = ipaddress.ip_network((net.network_address.ipv4_mapped, net.prefixlen - 96))
         canonical.add(str(net))
+    if len(canonical) > MAX_NETWORKS:
+        raise ValueError(f"Whitelist expands to {len(canonical)} networks; the limit is {MAX_NETWORKS}. "
+                         "Use CIDR notation or fewer ranges.")
     return sorted(canonical)
+
+
+def shared_whitelist(values):
+    # A host-wide ban on loopback would break the coordinator and other NS8
+    # services. These two local-only networks are therefore invariant.
+    return networks(sorted(set(networks(values)).union(LOOPBACKS)))
+
+
+@functools.lru_cache(maxsize=16)
+def _parsed(whitelist):
+    return tuple(ipaddress.ip_network(n) for n in whitelist)
 
 
 def allowed(ip, whitelist):
     item = ipaddress.ip_address(address(ip))
-    return any(item in ipaddress.ip_network(n) for n in whitelist)
+    return any(item in n for n in _parsed(tuple(whitelist)))
 
 
 def url(value, https_only=True):

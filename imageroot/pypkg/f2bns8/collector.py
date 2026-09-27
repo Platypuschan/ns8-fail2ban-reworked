@@ -107,8 +107,18 @@ class Collector:
         self.checkpoint = read_json(self.root / "collector.json", {"cursor": "", "files": {}, "started": time.time(), "since": time.time()})
         self.sources = []
         self.files = []
-        self.last_save = 0
+        self.last_save = self.last_status = 0
+        # Saved at once after a detection, so a restart cannot count the same
+        # failure twice. Other progress is saved at most every 10 seconds.
+        self.dirty = not (self.root / "collector.json").exists()
+        self.detected = False
         (self.root / "logs").mkdir(exist_ok=True)
+
+    def save(self, force=False):
+        if self.dirty and (force or self.detected or time.monotonic() - self.last_save >= 10):
+            atomic_json(self.root / "collector.json", self.checkpoint)
+            self.dirty = self.detected = False
+            self.last_save = time.monotonic()
 
     def refresh(self):
         self.sources = discover()
@@ -145,6 +155,7 @@ class Collector:
             os.replace(path, path.with_suffix(".log.1"))
         with path.open("a") as stream:
             stream.write(stamp + " " + ip + " " + record + "\n")
+        self.detected = True
         self.node.set("last_detection", {"jail": jail, "module": module, "time": now()})
 
     def journal(self, record):
@@ -165,6 +176,7 @@ class Collector:
         if record.get("__CURSOR"):
             self.checkpoint["cursor"] = record["__CURSOR"]
             self.checkpoint["since"] = when
+            self.dirty = True
 
     def tail_files(self):
         for source, path in self.files:
@@ -173,6 +185,7 @@ class Collector:
                 key = str(stat.st_dev) + ":" + str(stat.st_ino)
                 saved = self.checkpoint["files"].get(key, 0)
                 discarding = self.checkpoint.setdefault("discarding", {})
+                before = (self.checkpoint["files"].get(key), key in discarding)
                 if saved > stat.st_size:
                     saved = 0
                     discarding.pop(key, None)
@@ -206,6 +219,8 @@ class Collector:
                             except (ValueError, KeyError, UnicodeError):
                                 pass
                     self.checkpoint["files"][key] = stream.tell()
+                if (self.checkpoint["files"][key], key in discarding) != before:
+                    self.dirty = True
             except FileNotFoundError:
                 continue  # Rotation; rediscovery follows.
 
@@ -227,8 +242,10 @@ class Collector:
                         except (ValueError, TypeError):
                             pass
                 self.tail_files()
-                atomic_json(self.root / "collector.json", self.checkpoint)
-                self.node.set("collector_status", {"ok": True, "updated": now(), "error": ""})
+                self.save()
+                if time.monotonic() - self.last_status >= 30:
+                    self.node.set("collector_status", {"ok": True, "updated": now(), "error": ""})
+                    self.last_status = time.monotonic()
                 if time.monotonic() - refreshed > 60:
                     self.refresh()
                     refreshed = time.monotonic()
@@ -236,9 +253,10 @@ class Collector:
                 # A journal vacuum or reboot can invalidate a saved cursor.
                 # Resume from its timestamp, not from historical login failures.
                 self.checkpoint["cursor"] = ""
-                atomic_json(self.root / "collector.json", self.checkpoint)
+                self.dirty = True
             raise RuntimeError("Journal reader stopped; systemd will restart collection")
         finally:
+            self.save(force=True)
             process.terminate()
             process.wait(timeout=10)
 

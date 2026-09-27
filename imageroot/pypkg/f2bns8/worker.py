@@ -20,7 +20,8 @@ def control(command):
 def synchronize(node, settings):
     snapshot = node.snapshot()
     result = call(settings, "/v1/sync", {"node": settings["node_id"], "name": settings["node_name"],
-        "identity": snapshot["identity"], "revision": snapshot["revision"],
+        "identity": snapshot["identity"], "generation": snapshot.get("generation", ""),
+        "revision": snapshot["revision"],
         "events": [{k: v for k, v in event.items() if k != "matches"} for event in node.pending()]})
     node.apply(result)
     node.set("sync_status", {"ok": True, "last_success": now(), "error": ""})

@@ -1,15 +1,19 @@
 import concurrent.futures
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
+import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 import uuid
 from urllib.error import HTTPError
 
-from f2bns8.common import address, atomic_json, database, networks, public_host
+from f2bns8.common import address, atomic_json, database, networks, public_host, shared_whitelist
+from f2bns8 import lifecycle
 from f2bns8.collector import Collector, owns_record
 from f2bns8.node import Node
 from f2bns8.registry import Registry
@@ -36,7 +40,8 @@ class RegistryTests(unittest.TestCase):
 
     def sync(self, node):
         state = node.snapshot()
-        result = self.registry.sync(self.ids[node], "NS8 / fail2ban1", state["revision"], state["identity"], node.pending())
+        result = self.registry.sync(self.ids[node], "NS8 / fail2ban1", state["revision"], state["identity"],
+                                    node.pending(), state.get("generation", ""))
         node.apply(result)
         return result
 
@@ -150,6 +155,36 @@ class RegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "backwards"):
             self.registry.sync(self.ids[self.a], "x", 99, self.a.snapshot()["identity"], [])
 
+    def test_peers_recover_after_coordinator_restore(self):
+        path = self.registry.path
+        self.ban(self.a, "198.51.100.1")
+        self.sync(self.a)
+        with sqlite3.connect(str(path)) as source, sqlite3.connect(str(self.root / "backup.db")) as target:
+            source.backup(target)
+        source.close()
+        target.close()
+        self.ban(self.b, "198.51.100.2")
+        self.sync(self.b)
+        self.sync(self.a)
+        self.assertEqual(self.a.snapshot()["revision"], 2)
+        # Restore the older database the same way lifecycle.restore() does.
+        for suffix in ("", "-wal", "-shm"):
+            Path(str(path) + suffix).unlink(missing_ok=True)
+        os.replace(self.root / "backup.db", path)
+        self.registry = Registry(path)
+        self.registry.new_generation()
+        self.ban(self.a, "198.51.100.3")
+        self.sync(self.a)
+        self.assertEqual(self.a.snapshot()["revision"], 1)
+        self.assertEqual(self.a.pending()[0]["base_revision"], 1)
+        self.sync(self.a)
+        self.sync(self.b)
+        expected = ["198.51.100.1", "198.51.100.3"]
+        self.assertEqual([b["ip"] for b in self.registry.snapshot()["bans"]], expected)
+        for node in (self.a, self.b):
+            self.assertFalse(node.pending())
+            self.assertEqual(sorted(b["ip"] for b in node.bans()), expected)
+
     def test_out_of_order_responses_never_rollback_cache(self):
         self.ban(self.a)
         old = self.sync(self.a)
@@ -249,6 +284,18 @@ class CollectorTests(unittest.TestCase):
             self.assertIn("198.51.100.4", detected[0])
             self.assertIn("Wrong Password", detected[0])
 
+    def test_checkpoint_is_throttled_except_after_detections(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"F2B_STATE_DIR": directory}):
+            root = Path(directory)
+            collector = Collector()
+            collector.dirty, collector.last_save = True, time.monotonic()
+            collector.save()
+            self.assertFalse((root / "collector.json").exists())
+            collector.detected = True
+            collector.save()
+            self.assertTrue((root / "collector.json").exists())
+            self.assertFalse(collector.dirty)
+
 
 class ConfigurationTests(unittest.TestCase):
     def test_whitelist_ranges(self):
@@ -259,6 +306,28 @@ class ConfigurationTests(unittest.TestCase):
         for value in ("192.0.2.1 # comment", "192.0.2.1;touch /tmp/bad", "fe80::1%eth0"):
             with self.assertRaises(ValueError):
                 networks([value])
+
+    def test_whitelist_limit_applies_to_expanded_networks(self):
+        ranges = [f"10.{i}.0.1-10.{i}.255.254" for i in range(200)]
+        with self.assertRaisesRegex(ValueError, "expands to 6000 networks"):
+            networks(ranges)
+        with self.assertRaisesRegex(ValueError, "more than 4096 entries"):
+            networks(["192.0.2.1"] * 4097)
+        # A full list still fits once the invariant loopbacks are added back.
+        full = shared_whitelist([f"10.{i // 256}.{i % 256}.0/24" for i in range(4094)])
+        self.assertEqual(shared_whitelist(full), full)
+        with tempfile.TemporaryDirectory() as directory:
+            registry = Registry(Path(directory) / "registry.db")
+            self.assertEqual(len(registry.set_whitelist(full, 0)["whitelist"]), 4096)
+
+    @patch.dict("os.environ", {"MODULE_ID": "fail2ban1"})
+    def test_destroy_removes_firewall_when_route_removal_fails(self):
+        with patch.object(lifecycle, "systemctl"), patch.object(lifecycle, "config", return_value={"mode": "coordinator"}), \
+                patch.object(lifecycle, "route", side_effect=RuntimeError("proxy down")), \
+                patch("f2bns8.firewall.remove") as remove, patch.object(lifecycle.Path, "unlink"):
+            with self.assertRaisesRegex(RuntimeError, "proxy down"):
+                lifecycle.destroy()
+        remove.assert_called_once_with("fail2ban1")
 
     def test_public_url_has_no_database_port(self):
         self.assertEqual(public_host("https://bans.example.org"), "bans.example.org")

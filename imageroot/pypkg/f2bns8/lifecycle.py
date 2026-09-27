@@ -84,9 +84,13 @@ def destroy():
         systemctl("disable", "--now", name, check=False)
         Path("/etc/systemd/system", name).unlink(missing_ok=True)
     systemctl("daemon-reload")
-    if config().get("mode") == "coordinator":
-        route(config(), delete=True)
-    remove(module)
+    # Nothing manages the table once the services are gone, so never let a
+    # reverse proxy failure leave its bans on the host.
+    try:
+        if config().get("mode") == "coordinator":
+            route(config(), delete=True)
+    finally:
+        remove(module)
 
 
 def backup():
@@ -112,6 +116,10 @@ def restore(clone=False):
             (root / (path.name + suffix)).unlink(missing_ok=True)
         shutil.copyfile(path, root / path.name)
         os.chmod(root / path.name, 0o600)
+    if not clone and (root / "coordinator.sqlite3").exists():
+        # Peers may already have newer revisions than this backup.
+        from .registry import Registry
+        Registry(root / "coordinator.sqlite3").new_generation()
     settings = config()
     if not settings:
         return

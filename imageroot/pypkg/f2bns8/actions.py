@@ -8,7 +8,7 @@ import socket
 import sys
 import uuid
 from urllib.error import HTTPError
-from .common import atomic_json, config, database, networks, public_host, state_dir, url
+from .common import atomic_json, config, database, public_host, shared_whitelist, state_dir, url
 from . import lifecycle
 from .node import Node
 from .registry import Registry
@@ -122,7 +122,7 @@ def execute(action, data):
             raise ValueError("Configure synchronization first")
         node = Node(state_dir() / "node.sqlite3")
         payload = {"ips": data["ips"]} if action == "unban-addresses" else {
-            "whitelist": networks(data["whitelist"]), "revision": data["revision"]}
+            "whitelist": shared_whitelist(data["whitelist"]), "revision": data["revision"]}
         snapshot = call(config(), "/v1/unban" if action == "unban-addresses" else "/v1/whitelist", payload)
         node.apply(snapshot)
         return {"revision": snapshot["revision"]}

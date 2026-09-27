@@ -2,7 +2,7 @@
 
 import json
 import uuid
-from .common import LOOPBACKS, address, allowed, database, networks, now, safe_text
+from .common import address, allowed, database, now, safe_text, shared_whitelist
 
 
 class Registry:
@@ -12,7 +12,8 @@ class Registry:
             db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
             for key, value in (("revision", "0"), ("whitelist_revision", "0"),
                                ("whitelist", '["127.0.0.0/8", "::1/128"]'),
-                               ("identity", str(uuid.uuid4()))):
+                               ("identity", str(uuid.uuid4())),
+                               ("generation", str(uuid.uuid4()))):
                 db.execute("INSERT OR IGNORE INTO meta VALUES (?, ?)", (key, value))
             db.execute("CREATE TABLE IF NOT EXISTS bans (ip TEXT PRIMARY KEY, active INTEGER NOT NULL, revoked_at INTEGER NOT NULL DEFAULT 0, detail TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, result TEXT NOT NULL)")
@@ -31,7 +32,8 @@ class Registry:
 
     def _snapshot(self, db):
         meta = self._meta(db)
-        return {"identity": meta["identity"], "revision": int(meta["revision"]),
+        return {"identity": meta["identity"], "generation": meta["generation"],
+                "revision": int(meta["revision"]),
                 "whitelist_revision": int(meta["whitelist_revision"]),
                 "whitelist": json.loads(meta["whitelist"]),
                 "revocations": dict(db.execute("SELECT ip,revoked_at FROM bans WHERE revoked_at>0")),
@@ -40,10 +42,15 @@ class Registry:
                 "nodes": [dict(r) for r in db.execute("SELECT name,seen,revision FROM nodes ORDER BY name")]}
 
     def snapshot(self):
-        with database(self.path) as db:
+        with database(self.path, readonly=True) as db:
             return self._snapshot(db)
 
-    def sync(self, node, name, revision, identity, events):
+    def new_generation(self):
+        """Mark a restored database so peers accept its older revision."""
+        with database(self.path) as db:
+            db.execute("UPDATE meta SET value=? WHERE key='generation'", (str(uuid.uuid4()),))
+
+    def sync(self, node, name, revision, identity, events, generation=None):
         uuid.UUID(node)
         if not isinstance(revision, int) or revision < 0 or not isinstance(events, list) or len(events) > 100:
             raise ValueError("Invalid sync request")
@@ -51,10 +58,14 @@ class Registry:
             meta = self._meta(db)
             if identity and identity != meta["identity"]:
                 raise ValueError("Coordinator identity changed; reconfigure this connection")
-            if revision > int(meta["revision"]):
+            # Peers without a generation predate restore support.
+            restored = generation is not None and generation != meta["generation"]
+            if revision > int(meta["revision"]) and not restored:
                 raise ValueError("Coordinator revision moved backwards; restore its latest database")
             results = []
-            for event in events:
+            # A peer from another generation first adopts this snapshot, which
+            # rebases its outbox, and submits its events on the next sync.
+            for event in [] if restored else events:
                 event_id = str(uuid.UUID(event["id"]))
                 previous = db.execute("SELECT result FROM events WHERE id=?", (event_id,)).fetchone()
                 if previous:
@@ -98,9 +109,7 @@ class Registry:
             return self._snapshot(db)
 
     def set_whitelist(self, values, expected_revision):
-        # A host-wide ban on loopback would break the coordinator and other NS8
-        # services. These two local-only networks are therefore invariant.
-        values = networks(networks(values) + list(LOOPBACKS))
+        values = shared_whitelist(values)
         with database(self.path) as db:
             meta = self._meta(db)
             if expected_revision != int(meta["whitelist_revision"]):

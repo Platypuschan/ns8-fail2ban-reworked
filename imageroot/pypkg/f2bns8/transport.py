@@ -70,7 +70,8 @@ def make_server(registry, token, port=0):
                     return self.respond(413, {"error": "Invalid request size"})
                 data = json.loads(self.rfile.read(length))
                 if self.path == "/v1/sync":
-                    result = registry.sync(data["node"], data["name"], data["revision"], data.get("identity", ""), data["events"])
+                    result = registry.sync(data["node"], data["name"], data["revision"], data.get("identity", ""),
+                                           data["events"], data.get("generation"))
                 elif self.path == "/v1/unban":
                     result = registry.unban(data["ips"])
                 elif self.path == "/v1/whitelist":

@@ -20,7 +20,7 @@ class Node:
                                             "whitelist": ["127.0.0.0/8", "::1/128"], "bans": [], "nodes": []}
 
     def get(self, key, default=None):
-        with database(self.path) as db:
+        with database(self.path, readonly=True) as db:
             row = db.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
             return json.loads(row[0]) if row else default
 
@@ -29,7 +29,7 @@ class Node:
             db.execute("INSERT OR REPLACE INTO kv VALUES (?,?)", (key, json.dumps(value)))
 
     def snapshot(self):
-        with database(self.path) as db:
+        with database(self.path, readonly=True) as db:
             return self._snapshot(db)
 
     def ban(self, ip, jail, module, node_name, matches, notify=True):
@@ -50,7 +50,7 @@ class Node:
             return event
 
     def pending(self):
-        with database(self.path) as db:
+        with database(self.path, readonly=True) as db:
             return [json.loads(r[0]) for r in db.execute("SELECT event FROM pending ORDER BY rowid LIMIT 100")]
 
     def apply(self, snapshot):
@@ -58,7 +58,10 @@ class Node:
             old = self._snapshot(db)
             if old["identity"] and old["identity"] != snapshot["identity"]:
                 raise ValueError("Coordinator identity changed")
-            if snapshot["revision"] < old["revision"]:
+            # A new generation means the coordinator was restored from a backup
+            # and its revision may be lower than this cache. It is authoritative.
+            restored = old.get("generation", "") != snapshot.get("generation", "")
+            if snapshot["revision"] < old["revision"] and not restored:
                 # A manual task and background sync can complete out of order.
                 # Consume acknowledgements but never roll the cache backwards.
                 snapshot = {**old, "results": snapshot.get("results", [])}
@@ -67,7 +70,11 @@ class Node:
                 if result["result"] in ("whitelisted", "revoked"):
                     db.execute("DELETE FROM notifications WHERE id=?", (result["id"],))
             for row in db.execute("SELECT id,ip,event FROM pending").fetchall():
-                base = json.loads(row["event"])["base_revision"]
+                event = json.loads(row["event"])
+                if restored and event["base_revision"] > snapshot["revision"]:
+                    event["base_revision"] = snapshot["revision"]
+                    db.execute("UPDATE pending SET event=? WHERE id=?", (json.dumps(event), row["id"]))
+                base = event["base_revision"]
                 revoked = snapshot.get("revocations", {}).get(row["ip"], 0) > base
                 revoked = revoked or any(rev > base and allowed(row["ip"], [net])
                     for net, rev in snapshot.get("policy_revocations", {}).items())
@@ -78,7 +85,7 @@ class Node:
             db.execute("INSERT OR REPLACE INTO kv VALUES ('snapshot',?)", (json.dumps(clean),))
 
     def bans(self):
-        with database(self.path) as db:
+        with database(self.path, readonly=True) as db:
             snapshot = self._snapshot(db)
             bans = {b["ip"]: {**b, "pending": False} for b in snapshot["bans"]}
             for row in db.execute("SELECT event FROM pending"):
