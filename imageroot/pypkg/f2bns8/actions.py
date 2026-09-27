@@ -1,5 +1,6 @@
 """Small NS8 task API used by the module settings page."""
 import json
+import logging
 import os
 import re
 import secrets
@@ -42,6 +43,7 @@ def validate(data, old):
         notice_token = ""
     if not isinstance(notice_token, str) or any(ord(c) < 32 or ord(c) > 126 for c in notice_token):
         raise ValueError("Invalid ntfy token")
+    settings["notifications"]["token"] = notice_token
     if notice.get("enabled") or notice.get("url"):
         notice_url = url(notice.get("url", ""), https_only=False)
         topic = notice.get("topic", "")
@@ -76,6 +78,16 @@ def configure(data):
             if old["mode"] == "coordinator":
                 lifecycle.route(old)
             lifecycle.start(old)
+        else:
+            try:
+                lifecycle.destroy()
+            except Exception as cleanup_error:
+                logging.warning("First configuration cleanup failed: %s", cleanup_error)
+            finally:
+                (state_dir() / "config.json").unlink(missing_ok=True)
+                for name in ("node", "coordinator"):
+                    for suffix in ("", "-wal", "-shm"):
+                        (state_dir() / (name + ".sqlite3" + suffix)).unlink(missing_ok=True)
         raise
     return {"configured": True}
 

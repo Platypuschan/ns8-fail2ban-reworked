@@ -1,8 +1,9 @@
 """Durable node cache, ban outbox and notification queue."""
 
 import json
+import ipaddress
 import uuid
-from .common import address, allowed, database, now, safe_text
+from .common import address, allowed, database, local_protection, now, safe_text
 
 
 class Node:
@@ -17,7 +18,7 @@ class Node:
     def _snapshot(db):
         row = db.execute("SELECT value FROM kv WHERE key='snapshot'").fetchone()
         return json.loads(row[0]) if row else {"identity": "", "revision": 0, "whitelist_revision": 0,
-                                            "whitelist": ["127.0.0.0/8", "::1/128"], "bans": [], "nodes": []}
+                                            "whitelist": ["127.0.0.0/8", "::1/128"], "protected": [], "bans": [], "nodes": []}
 
     def get(self, key, default=None):
         with database(self.path, readonly=True) as db:
@@ -36,7 +37,7 @@ class Node:
         ip = address(ip)
         with database(self.path) as db:
             snapshot = self._snapshot(db)
-            if allowed(ip, snapshot["whitelist"]) or any(b["ip"] == ip for b in snapshot["bans"]):
+            if allowed(ip, snapshot["whitelist"] + snapshot.get("protected", []) + list(local_protection())) or any(b["ip"] == ip for b in snapshot["bans"]):
                 return None
             if db.execute("SELECT 1 FROM pending WHERE ip=?", (ip,)).fetchone():
                 return None
@@ -54,10 +55,39 @@ class Node:
             return [json.loads(r[0]) for r in db.execute("SELECT event FROM pending ORDER BY rowid LIMIT 100")]
 
     def apply(self, snapshot):
+        if snapshot.get("delta") and not snapshot.get("results"):
+            current = self.snapshot()
+            if (current["identity"] == snapshot["identity"] and
+                    current.get("generation") == snapshot.get("generation") and
+                    current["revision"] == snapshot["revision"] == snapshot["base_revision"] and
+                    current.get("history_floor", 0) >= snapshot.get("history_floor", 0)):
+                return
         with database(self.path) as db:
             old = self._snapshot(db)
             if old["identity"] and old["identity"] != snapshot["identity"]:
                 raise ValueError("Coordinator identity changed")
+            if snapshot.get("delta"):
+                if old.get("generation") != snapshot.get("generation"):
+                    raise ValueError("A restored coordinator must send a full snapshot")
+                if snapshot["base_revision"] == old["revision"]:
+                    bans = {ban["ip"]: ban for ban in old["bans"]}
+                    for ip in snapshot["removals"]:
+                        bans.pop(ip, None)
+                    for ban in snapshot["upserts"]:
+                        bans[ban["ip"]] = ban
+                    snapshot = {**old, **{k: v for k, v in snapshot.items() if k not in
+                        ("delta", "base_revision", "upserts", "removals", "revocations", "policy_revocations")},
+                        "bans": list(bans.values()),
+                        "revocations": {k: v for k, v in
+                            {**old.get("revocations", {}), **snapshot["revocations"]}.items()
+                            if v > snapshot.get("history_floor", 0)},
+                        "policy_revocations": {k: v for k, v in
+                            {**old.get("policy_revocations", {}), **snapshot["policy_revocations"]}.items()
+                            if v > snapshot.get("history_floor", 0)}}
+                elif snapshot["base_revision"] < old["revision"]:
+                    snapshot = {**old, "results": snapshot.get("results", [])}
+                else:
+                    raise ValueError("Delta begins after the local revision")
             # A new generation means the coordinator was restored from a backup
             # and its revision may be lower than this cache. It is authoritative.
             restored = old.get("generation", "") != snapshot.get("generation", "")
@@ -67,8 +97,11 @@ class Node:
                 snapshot = {**old, "results": snapshot.get("results", [])}
             for result in snapshot.get("results", []):
                 db.execute("DELETE FROM pending WHERE id=?", (result["id"],))
-                if result["result"] in ("whitelisted", "revoked"):
+                if result["result"] in ("whitelisted", "revoked", "stale"):
                     db.execute("DELETE FROM notifications WHERE id=?", (result["id"],))
+            policies = [(ipaddress.ip_network(net), rev) for net, rev in
+                        snapshot.get("policy_revocations", {}).items()]
+            protected = snapshot["whitelist"] + snapshot.get("protected", []) + list(local_protection())
             for row in db.execute("SELECT id,ip,event FROM pending").fetchall():
                 event = json.loads(row["event"])
                 if restored and event["base_revision"] > snapshot["revision"]:
@@ -76,9 +109,9 @@ class Node:
                     db.execute("UPDATE pending SET event=? WHERE id=?", (json.dumps(event), row["id"]))
                 base = event["base_revision"]
                 revoked = snapshot.get("revocations", {}).get(row["ip"], 0) > base
-                revoked = revoked or any(rev > base and allowed(row["ip"], [net])
-                    for net, rev in snapshot.get("policy_revocations", {}).items())
-                if revoked or allowed(row["ip"], snapshot["whitelist"]):
+                revoked = revoked or any(rev > base and ipaddress.ip_address(row["ip"]) in net
+                    for net, rev in policies)
+                if revoked or base < snapshot.get("history_floor", 0) or allowed(row["ip"], protected):
                     db.execute("DELETE FROM pending WHERE id=?", (row["id"],))
                     db.execute("DELETE FROM notifications WHERE id=?", (row["id"],))
             clean = {k: v for k, v in snapshot.items() if k != "results"}
@@ -91,4 +124,5 @@ class Node:
             for row in db.execute("SELECT event FROM pending"):
                 event = json.loads(row[0])
                 bans.setdefault(event["ip"], {k: v for k, v in event.items() if k != "matches"})["pending"] = True
-            return [b for b in bans.values() if not allowed(b["ip"], snapshot["whitelist"])]
+            ignored = snapshot["whitelist"] + snapshot.get("protected", []) + list(local_protection())
+            return [b for b in bans.values() if not allowed(b["ip"], ignored)]

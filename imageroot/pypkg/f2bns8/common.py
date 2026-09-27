@@ -1,14 +1,19 @@
 """Validation and durable local storage. No third-party dependencies."""
 
 import contextlib
+import bisect
 import functools
 import ipaddress
 import json
 import os
 from pathlib import Path
 import re
+import socket
 import sqlite3
+import subprocess
 import tempfile
+import threading
+import time
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
@@ -17,6 +22,8 @@ LOOPBACKS = ("127.0.0.0/8", "::1/128")
 # Every network becomes a Fail2ban ignoreip entry in each jail, so bound the
 # expanded list, not just the number of lines a user enters.
 MAX_NETWORKS = 4096
+_prepared = {}
+_prepare_lock = threading.Lock()
 
 
 def now():
@@ -56,12 +63,21 @@ def atomic_json(path, value):
 
 @contextlib.contextmanager
 def database(path, readonly=False):
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(str(path), timeout=15, isolation_level=None)
-    os.chmod(path, 0o600)
     db.row_factory = sqlite3.Row
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA synchronous=FULL")
+    identity = (path.stat().st_dev, path.stat().st_ino)
+    with _prepare_lock:
+        if _prepared.get(str(path)) != identity:
+            os.chmod(path, 0o600)
+            db.execute("PRAGMA journal_mode=WAL")
+            _prepared[str(path)] = identity
+    if readonly:
+        db.execute("PRAGMA query_only=ON")
+    else:
+        # synchronous is connection-local; journal_mode and chmod are not.
+        db.execute("PRAGMA synchronous=FULL")
     # WAL readers see a consistent snapshot without blocking writers.
     db.execute("BEGIN" if readonly else "BEGIN IMMEDIATE")
     try:
@@ -120,12 +136,78 @@ def shared_whitelist(values):
 
 @functools.lru_cache(maxsize=16)
 def _parsed(whitelist):
-    return tuple(ipaddress.ip_network(n) for n in whitelist)
+    families = ([], [])
+    for value in whitelist:
+        network = ipaddress.ip_network(value)
+        families[0 if network.version == 4 else 1].append(
+            (int(network.network_address), int(network.broadcast_address)))
+    indexes = []
+    for intervals in families:
+        merged = []
+        for start, end in sorted(intervals):
+            if merged and start <= merged[-1][1] + 1:
+                merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+            else:
+                merged.append((start, end))
+        indexes.append((tuple(start for start, _ in merged), tuple(end for _, end in merged)))
+    return tuple(indexes)
 
 
 def allowed(ip, whitelist):
     item = ipaddress.ip_address(address(ip))
-    return any(item in n for n in _parsed(tuple(whitelist)))
+    starts, ends = _parsed(tuple(whitelist))[0 if item.version == 4 else 1]
+    offset = bisect.bisect_right(starts, int(item)) - 1
+    return offset >= 0 and int(item) <= ends[offset]
+
+
+@functools.lru_cache(maxsize=2)
+def _local_protection(bucket):
+    """Protect interface IPs, directly routed VPN subnets and the sync peer."""
+    result = set(LOOPBACKS)
+    vpn = set()
+    try:
+        interfaces = json.loads(subprocess.run(["ip", "-j", "address", "show"], capture_output=True,
+                                               text=True, check=True, timeout=5).stdout)
+        for interface in interfaces:
+            name = interface.get("ifname", "")
+            if name.startswith(("wg", "tun", "tailscale", "nebula", "zt")):
+                vpn.add(name)
+            for info in interface.get("addr_info", []):
+                ip = info.get("local", "")
+                try:
+                    result.add(str(ipaddress.ip_network(address(ip) + ("/32" if ":" not in ip else "/128"))))
+                    if name in vpn:
+                        result.add(str(ipaddress.ip_network(f"{ip}/{info['prefixlen']}", strict=False)))
+                except (ValueError, KeyError):
+                    pass
+        if vpn:
+            routes = json.loads(subprocess.run(["ip", "-j", "route", "show", "table", "all"],
+                                              capture_output=True, text=True, check=True, timeout=5).stdout)
+            for route in routes:
+                if route.get("dev") not in vpn or route.get("dst") in (None, "default"):
+                    continue
+                try:
+                    net = ipaddress.ip_network(route["dst"], strict=False)
+                    if net.prefixlen >= (16 if net.version == 4 else 48):
+                        result.add(str(net))
+                except ValueError:
+                    pass
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
+        pass
+    settings = config()
+    try:
+        host = urlsplit(settings.get("sync_url") or settings.get("public_url", "")).hostname
+        if host:
+            for entry in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM):
+                ip = address(entry[4][0])
+                result.add(ip + ("/32" if ":" not in ip else "/128"))
+    except (OSError, ValueError):
+        pass
+    return tuple(sorted(result))
+
+
+def local_protection():
+    return _local_protection(int(time.monotonic() // 60))
 
 
 def url(value, https_only=True):

@@ -51,6 +51,12 @@ def login():
 
 for part in PARTS:
     subprocess.run(["systemctl", "is-active", "--quiet", module + "-" + part + ".service"], check=True)
+engine = json.loads(subprocess.check_output(["podman", "inspect", module + "-engine"], text=True))[0]
+assert engine["Config"]["User"] == "65532:65532"
+mounts = {item["Destination"]: item for item in engine["Mounts"]}
+assert {destination for destination in mounts if destination.startswith("/state")} == {"/state/logs", "/state/engine"}, mounts
+assert not mounts["/state/logs"]["RW"] and mounts["/state/engine"]["RW"]
+print("PASS: engine runs without root or access to module secrets", flush=True)
 wait_for(lambda: node.get("sync_status", {}).get("ok") and node.get("engine_status", {}).get("ok"), "coordinator automatically synchronizes its own node")
 wait_for(lambda: any(s["jail"] == "ns8" and s["ready"] for s in node.get("sources", [])), "NS8 Traefik discovery")
 for number in range(4):
@@ -95,6 +101,7 @@ print("PASS: shared whitelist suppresses bans and notifications", flush=True)
 subprocess.run(["module-dump-state"], check=True)
 assert (state_dir() / "backup/coordinator.sqlite3").exists()
 assert (state_dir() / "backup/node.sqlite3").exists()
+assert (state_dir() / "backup/fail2ban.sqlite3").exists()
 subprocess.run(["systemctl", "restart", module + "-engine.service", module + "-worker.service"], check=True)
 wait_for(lambda: node.get("engine_status", {}).get("ok"), "services restart successfully")
 print("PASS: SQLite backup snapshots created", flush=True)

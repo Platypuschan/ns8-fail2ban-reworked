@@ -23,17 +23,24 @@ scopes. This project targets NS8, including separate NS8 installations.
   unnecessary. Peers use an authenticated HTTPS API, never a shared SQLite file.
 - An offline node keeps its existing bans and whitelist indefinitely, enforces
   new local bans immediately, and queues them for synchronization. Connected
-  nodes poll every three seconds. An unreachable node learns changes when it
-  reconnects; global manual operations require the coordinator to be reachable.
+  nodes poll every three seconds. Unchanged polls return a small acknowledgment;
+  changed revisions return deltas. A peer that falls behind the retained delta
+  history receives a full snapshot. Global manual operations require the
+  coordinator to be reachable.
 - Manual unban tombstones and whitelist history prevent delayed messages from
   resurrecting obsolete bans. New failures **after** the node learns of a manual
-  unban can trigger a new ban. Retried sync events are idempotent.
+  unban can trigger a new ban. Retried sync events are idempotent. Old events,
+  revocations, inactive nodes and delta history are pruned; an event older than
+  the retained revocation history is rejected conservatively when its node
+  reconnects. Permanent active bans are retained until manually removed.
 - ntfy sends only for a new ban triggered by sufficient **local** login failures.
   Imported bans and Fail2ban database restoration do not notify. Messages contain
   UTC date/time, IP, jail, node/module and original matching log lines. A durable
   queue retries failed deliveries. Messages over ntfy's normal message size use
-  a text attachment. After a lost HTTP acknowledgment, a retry can result in a
-  duplicate notification; ntfy does not provide an idempotent publish API.
+  a text attachment. If attachments are disabled, a shorter text notice is
+  sent. Permanent HTTP errors are dropped and transient errors retry at most
+  eight times; diagnostics retain the last failed event ID. After a lost HTTP
+  acknowledgment, a retry can result in a duplicate notification.
 
 ## Settings
 
@@ -52,6 +59,11 @@ scopes. This project targets NS8, including separate NS8 installations.
    and clear matching bans. Concurrent edits require a refresh before overwriting
    another administrator's changes. The local-only loopback networks remain
    whitelisted so an authentication failure cannot break internal NS8 services.
+   The module also protects each node's interface addresses, coordinator DNS
+   addresses and subnets directly routed over detected VPN interfaces (such as
+   WireGuard and Tailscale). Nodes share those protected networks with the
+   coordinator. Check the shared whitelist for other trusted proxies and
+   management networks that are not visible in those routes.
 5. Select blocked addresses and click **Unblock selected**. This changes the
    common list; no node/scope choice is required.
 6. Optionally enable notifications and set the ntfy server URL, topic and token.
@@ -69,7 +81,7 @@ blocked. Every supported jail calls the same ban action and firewall.
 
 | Jail | Source | Detection |
 | --- | --- | --- |
-| SSH | Host systemd journal | Failed password, public-key and keyboard-interactive/PAM authentication |
+| SSH | Host systemd journal | Failed password, public-key and keyboard-interactive/PAM authentication, invalid users, pre-auth disconnects and maximum-attempts records (including socket-activated sshd) |
 | NS8 admin | Local Traefik access log | HTTP 401 on POST `/cluster-admin/api/login`, specifically the NS8 admin router/backend |
 | Gitea | Application container journal | Failed web/API authentication records and SSH authentication failures |
 | Organizr | JSON authentication logs in its NS8 application volume | `Wrong Password` and `Incorrect 2FA`; extra lockout messages are not counted twice |
@@ -77,8 +89,9 @@ blocked. Every supported jail calls the same ban action and firewall.
 
 Samba's NS8 default disables authentication audit events. Discovery persists an
 `auth_json_audit` level of at least 2 and applies it live with `smbcontrol`, without
-restarting Samba. Other logging settings are retained. The logging setting stays
-enabled after this module is removed. Organizr creates its log file upon login
+restarting Samba. Rootful container ownership is checked by container ID, with
+an exact-name fallback for older journal records. On removal, the prior logging
+setting is restored if nobody changed it in the meantime. Organizr creates its log file upon login
 activity; until a file exists, the settings page reports that it is waiting.
 
 Application-specific parsing is needed because failed logins are represented
@@ -101,10 +114,15 @@ server. Diagnostics lists discovered sources and operational failures.
 
 The rootful module owns host services for collection, synchronization, nftables
 reconciliation, notification delivery and the coordinator. The pinned Fail2ban
-engine runs in a container with no network and no capabilities. Its Python action
-writes to the durable node queue; no log content or IP is interpolated into shell
-commands. The worker owns firewall enforcement and retries independently of
-HTTPS or ntfy availability. The module never flushes the host firewall ruleset.
+engine runs as a non-root user in a container with no network and no capabilities.
+It mounts only read-only detection logs and its own writable queue/database/socket
+directory; configuration tokens and coordinator state remain on the host. Its
+Python action writes events to that durable queue, which the host worker validates
+and imports. No log content or IP is interpolated into shell commands. The worker
+owns firewall enforcement and retries independently of HTTPS or ntfy availability.
+The module never flushes the host firewall ruleset. Invalid coordinator API
+tokens are logged and limited to ten attempts per client per minute; authorized
+peers are not throttled.
 
 Host-wide input, output and forwarding hooks require an NS8 rootful module.
 Clusters that enforce certification for third-party rootful applications must
@@ -118,7 +136,8 @@ the services and the NS8 route. Coordinator identity/revision checks detect a
 replaced database or a rollback relative to a peer: recover the latest coordinator
 backup instead of silently dropping newer bans.
 
-Recovery from an external firewall table deletion happens within 15 seconds.
+Recovery from an external firewall table, chain or drop-rule deletion happens
+within 15 seconds.
 The periodic reconciliation does not make bans expire. A separate boot service
 restores cached bans before `network-pre.target`. Transparent
 layer-2 bridge switching or traffic offloaded completely outside host netfilter

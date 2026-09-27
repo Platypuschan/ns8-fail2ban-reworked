@@ -22,9 +22,29 @@ def remote(value):
     raise ValueError("Log record does not contain an unambiguous client address")
 
 
+SSH_PREFIX = r"(?:^|sshd(?:\[\d+\])?: )"
+SSH_FAILURE = re.compile(SSH_PREFIX + r"Failed (?:password|publickey|keyboard-interactive/pam) for (?:invalid user )?[^\r\n]+ from (\S+) port \d+(?: ssh\d)?(?: \[preauth\])?$")
+SSH_AUXILIARY = tuple(re.compile(SSH_PREFIX + pattern) for pattern in (
+    r"Invalid user [^\r\n]+ from (\S+)(?: port \d+)?(?: \[preauth\])?$",
+    r"Connection closed by (?:invalid user |authenticating user )?[^\r\n]*?(\S+) port \d+ \[preauth\]$",
+    r"maximum authentication attempts exceeded for [^\r\n]+ from (\S+) port \d+(?: ssh\d)?(?: \[preauth\])?$",
+))
+
+
+def ssh_detail(message):
+    match = SSH_FAILURE.search(message)
+    if match:
+        return remote(match[1]), True
+    for pattern in SSH_AUXILIARY:
+        match = pattern.search(message)
+        if match:
+            return remote(match[1]), False
+    return None
+
+
 def ssh(message):
-    match = re.search(r"(?:^|sshd(?:\[\d+\])?: )Failed (?:password|publickey|keyboard-interactive/pam) for (?:invalid user )?[^\r\n]+ from (\S+) port \d+(?: ssh\d)?(?: \[preauth\])?$", message)
-    return remote(match[1]) if match else None
+    detail = ssh_detail(message)
+    return detail[0] if detail else None
 
 
 def gitea(message):

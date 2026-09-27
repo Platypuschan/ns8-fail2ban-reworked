@@ -57,8 +57,18 @@ def discover():
             ranges = [(uid, uid + 1)]
             if uid:
                 ranges += subuids.get(module, []) + subuids.get(str(uid), [])
+            # Rootful modules all journal as UID 0. Podman's container ID is
+            # the primary owner; an exact container name is a fallback for
+            # older journal records without CONTAINER_ID_FULL.
+            containers = {}
+            if not uid:
+                try:
+                    rows = run_module(module, ["podman", "ps", "--no-trunc", "--format", "{{.ID}} {{.Names}}"])
+                    containers = dict(line.split(None, 1) for line in rows.splitlines() if " " in line)
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                    pass
             found.append({"module": module, "jail": kind, "uid": str(uid),
-                "uid_ranges": ranges, "environment": env})
+                "uid_ranges": ranges, "containers": containers, "environment": env})
     return found
 
 
@@ -71,7 +81,11 @@ def owns_record(source, record):
         return False
     if source["uid"] != "0":
         return True
-    return record.get("CONTAINER_NAME", "").startswith(source["module"])
+    containers = source.get("containers", {})
+    container_id = record.get("CONTAINER_ID_FULL") or record.get("CONTAINER_ID")
+    if container_id:
+        return any(full_id.startswith(container_id) for full_id in containers)
+    return record.get("CONTAINER_NAME") in containers.values()
 
 
 def samba_logging(source):
@@ -81,9 +95,35 @@ def samba_logging(source):
     level = re.search(r"(?:^|\s)auth_json_audit:(\d+)(?:\s|$)", old)
     new = old if level and int(level[1]) >= 2 else re.sub(r"(?:^|\s)auth_json_audit:\S+", "", old) + " auth_json_audit:2"
     if new != old:
+        path = state_dir() / "samba_loglevel.json"
+        changes = read_json(path, {})
+        if module in changes:
+            if old != changes[module]["set"]:
+                raise RuntimeError("Samba logging was changed externally; leaving it untouched")
+        else:
+            changes[module] = {"old": old, "set": new, "present": "SAMBA_LOGLEVEL" in source["environment"]}
+            atomic_json(path, changes)
         run_module(module, ["python3", "-c", "import agent,json,sys; agent.set_env('SAMBA_LOGLEVEL',json.load(sys.stdin)); agent.dump_env()"], input=json.dumps(new))
     # The live debug command also covers an already running container with old env.
     run_module(module, ["podman", "exec", "samba-dc", "smbcontrol", "all", "debug", new])
+
+
+def restore_samba_logging():
+    path = state_dir() / "samba_loglevel.json"
+    changes = read_json(path, {})
+    if not changes:
+        return
+    sources = {source["module"]: source for source in discover()}
+    for module, change in list(changes.items()):
+        source = sources.get(module)
+        if source and source["environment"].get("SAMBA_LOGLEVEL", "1 auth_audit:0 auth_json_audit:0") == change["set"]:
+            if change.get("present", True):
+                run_module(module, ["python3", "-c", "import agent,json,sys; agent.set_env('SAMBA_LOGLEVEL',json.load(sys.stdin)); agent.dump_env()"], input=json.dumps(change["old"]))
+            else:
+                run_module(module, ["python3", "-c", "import agent; agent.unset_env('SAMBA_LOGLEVEL'); agent.dump_env()"])
+            run_module(module, ["podman", "exec", "samba-dc", "smbcontrol", "all", "debug", change["old"]])
+        del changes[module]
+        atomic_json(path, changes)
 
 
 def log_files(source):
@@ -105,6 +145,9 @@ class Collector:
         self.root = state_dir()
         self.node = Node(self.root / "node.sqlite3")
         self.checkpoint = read_json(self.root / "collector.json", {"cursor": "", "files": {}, "started": time.time(), "since": time.time()})
+        seen = self.checkpoint.setdefault("file_seen", {})
+        for key in self.checkpoint.get("files", {}):
+            seen.setdefault(key, self.checkpoint.get("started", time.time()))
         self.sources = []
         self.files = []
         self.last_save = self.last_status = 0
@@ -112,6 +155,7 @@ class Collector:
         # failure twice. Other progress is saved at most every 10 seconds.
         self.dirty = not (self.root / "collector.json").exists()
         self.detected = False
+        self.ssh_sessions = {}
         (self.root / "logs").mkdir(exist_ok=True)
 
     def save(self, force=False):
@@ -142,6 +186,13 @@ class Collector:
         if not any(d["jail"] == "ns8" for d in details):
             details.append({"jail": "ns8", "module": "cluster-admin", "ready": False, "source": "Traefik access log", "error": "No local NS8 Traefik module discovered"})
         self.node.set("sources", details)
+        seen = self.checkpoint.setdefault("file_seen", {})
+        for key in list(self.checkpoint.get("files", {})):
+            if time.time() - seen.get(key, self.checkpoint.get("started", time.time())) > 86400:
+                del self.checkpoint["files"][key]
+                self.checkpoint.get("discarding", {}).pop(key, None)
+                seen.pop(key, None)
+                self.dirty = True
 
     def emit(self, jail, module, message, when):
         ip = parse(jail, message)
@@ -155,6 +206,7 @@ class Collector:
             os.replace(path, path.with_suffix(".log.1"))
         with path.open("a") as stream:
             stream.write(stamp + " " + ip + " " + record + "\n")
+        os.chmod(path, 0o640)  # The isolated engine reads logs as the shared group.
         self.detected = True
         self.node.set("last_detection", {"jail": jail, "module": module, "time": now()})
 
@@ -165,14 +217,32 @@ class Collector:
         if not isinstance(message, str):
             return
         when = int(record.get("__REALTIME_TIMESTAMP", "0")) / 1000000
-        if record.get("_SYSTEMD_UNIT") in ("sshd.service", "ssh.service") or record.get("SYSLOG_IDENTIFIER") == "sshd":
-            self.emit("sshd", "host", message, when)
+        unit = record.get("_SYSTEMD_UNIT", "")
+        if unit in ("sshd.service", "ssh.service") or re.fullmatch(r"sshd@[^/]+\.service", unit) or record.get("SYSLOG_IDENTIFIER") == "sshd":
+            from .parsers import ssh_detail
+            detail = ssh_detail(message)
+            if detail:
+                ip, primary = detail
+                key = (record.get("_PID"), ip)
+                if key[0]:
+                    # OpenSSH can report an invalid user, a failed password and
+                    # a connection close for the same session. Count the first
+                    # auxiliary line only; primary attempts remain distinct.
+                    previous = self.ssh_sessions.get(key, {"aux": False, "primary": False})
+                    count = primary and not (previous["aux"] and not previous["primary"])
+                    count = count or (not primary and not previous["aux"] and not previous["primary"])
+                    self.ssh_sessions[key] = {"aux": previous["aux"] or not primary,
+                                              "primary": previous["primary"] or primary, "time": when}
+                    if len(self.ssh_sessions) > 2048:
+                        self.ssh_sessions = {k: v for k, v in self.ssh_sessions.items() if when - v["time"] < 600}
+                    if count:
+                        self.emit("sshd", "host", message, when)
+                else:
+                    self.emit("sshd", "host", message, when)
         else:
-            for source in self.sources:
-                if source["jail"] == "organizr":
-                    continue
-                if owns_record(source, record):
-                    self.emit(source["jail"], source["module"], message, when)
+            owners = [source for source in self.sources if source["jail"] != "organizr" and owns_record(source, record)]
+            if len(owners) == 1:
+                self.emit(owners[0]["jail"], owners[0]["module"], message, when)
         if record.get("__CURSOR"):
             self.checkpoint["cursor"] = record["__CURSOR"]
             self.checkpoint["since"] = when
@@ -183,6 +253,10 @@ class Collector:
             try:
                 stat = path.stat()
                 key = str(stat.st_dev) + ":" + str(stat.st_ino)
+                seen = self.checkpoint.setdefault("file_seen", {})
+                if time.time() - seen.get(key, 0) > 3600:
+                    seen[key] = time.time()
+                    self.dirty = True
                 saved = self.checkpoint["files"].get(key, 0)
                 discarding = self.checkpoint.setdefault("discarding", {})
                 before = (self.checkpoint["files"].get(key), key in discarding)

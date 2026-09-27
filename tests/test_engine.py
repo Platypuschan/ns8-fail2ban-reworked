@@ -13,6 +13,7 @@ import unittest
 from f2bns8.common import atomic_json, database
 from f2bns8.engine_config import generate
 from f2bns8.node import Node
+from f2bns8.queue import drain
 
 UPSTREAM = os.getenv("FAIL2BAN_SOURCE")
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +35,10 @@ class EngineTests(unittest.TestCase):
         self.conf = self.root / "config"
         self.node = Node(self.state / "node.sqlite3")
         atomic_json(self.state / "config.json", {"node_name": "ns8-test / fail2ban1", "notifications": {"enabled": True}})
+        (self.state / "engine/queue").mkdir(parents=True)
+        (self.state / "logs").mkdir()
+        for jail in ("sshd", "ns8", "gitea", "organizr", "samba"):
+            (self.state / "logs" / (jail + ".log")).touch()
         generate(self.state, self.conf, Path(UPSTREAM) / "config", ROOT / "runtime/ns8_action.py")
         self.env = {**os.environ, "PYTHONPATH": str(ROOT / "imageroot/pypkg") + ":" + UPSTREAM, "F2B_STATE_DIR": str(self.state)}
         self.log = (self.root / "engine.log").open("w+")
@@ -45,11 +50,11 @@ class EngineTests(unittest.TestCase):
         self.wait_for(lambda: self.command(["status"])[0] == 0)
 
     def command(self, args):
-        if not (self.state / "fail2ban.sock").exists():
+        if not (self.state / "engine/fail2ban.sock").exists():
             raise FileNotFoundError("Engine socket is not ready")
         sys.path.insert(0, UPSTREAM)
         from fail2ban.client.csocket import CSocket
-        client = CSocket(str(self.state / "fail2ban.sock"))
+        client = CSocket(str(self.state / "engine/fail2ban.sock"))
         try:
             return client.send(args)
         finally:
@@ -59,6 +64,7 @@ class EngineTests(unittest.TestCase):
         deadline = time.monotonic() + 12
         while time.monotonic() < deadline:
             try:
+                drain(self.node, {"node_name": "ns8-test / fail2ban1", "notifications": {"enabled": True}})
                 if condition():
                     return
             except (OSError, ValueError):
