@@ -5,7 +5,7 @@ import subprocess
 import threading
 import time
 from . import firewall
-from .common import config, networks, now, read_json, state_dir
+from .common import config, networks, now, protected_networks, read_json, state_dir
 from .node import Node
 from .transport import call
 
@@ -19,10 +19,14 @@ def control(command):
 
 def synchronize(node, settings):
     snapshot = node.snapshot()
+    acks = node.acknowledgments()
     result = call(settings, "/v1/sync", {"node": settings["node_id"], "name": settings["node_name"],
         "identity": snapshot["identity"], "revision": snapshot["revision"],
+        "protected": protected_networks(),
+        "acks": acks,
         "events": [{k: v for k, v in event.items() if k != "matches"} for event in node.pending()]})
     node.apply(result)
+    node.confirm_acknowledgments(acks)
     node.set("sync_status", {"ok": True, "last_success": now(), "error": ""})
 
 
@@ -40,7 +44,8 @@ def reconcile_engine(node):
     wanted = {ban["ip"] for ban in node.bans()}
     status = control(["status"])
     jails = next((item[1] for item in status if "Jail list" in item[0]), "")
-    desired = node.snapshot()["whitelist"]
+    snapshot = node.snapshot()
+    desired = networks(snapshot["whitelist"] + snapshot.get("protected", []) + protected_networks())
     names = [jail.strip() for jail in jails.split(",") if jail.strip()]
     commands = [["get", jail, key] for jail in names for key in ("banip", "ignoreip")]
     values = control({"batch": commands}) if commands else []

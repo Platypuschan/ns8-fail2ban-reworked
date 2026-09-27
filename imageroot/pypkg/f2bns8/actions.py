@@ -1,5 +1,7 @@
 """Small NS8 task API used by the module settings page."""
 import json
+import contextlib
+import ipaddress
 import os
 import re
 import secrets
@@ -8,7 +10,7 @@ import socket
 import sys
 import uuid
 from urllib.error import HTTPError
-from .common import atomic_json, config, database, networks, public_host, state_dir, url
+from .common import atomic_json, config, database, networks, public_host, protected_networks, state_dir, url
 from . import lifecycle
 from .node import Node
 from .registry import Registry
@@ -33,6 +35,12 @@ def validate(data, old):
     if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", token):
         raise ValueError("Use the connection token from the coordinator settings")
     settings["sync_token"] = token
+    protected = data.get("protected_networks", old.get("protected_networks", []))
+    if not isinstance(protected, list) or len(protected) > 64:
+        raise ValueError("Protect at most 64 additional host or VPN networks")
+    settings["protected_networks"] = networks(protected)
+    if any(ipaddress.ip_network(value).prefixlen == 0 for value in settings["protected_networks"]):
+        raise ValueError("Do not protect the entire Internet; enter the cluster VPN subnet")
     notice = data.get("notifications", {})
     settings["notifications"] = {"enabled": notice.get("enabled", False), "url": "", "topic": "", "token": ""}
     if type(settings["notifications"]["enabled"]) is not bool:
@@ -78,9 +86,13 @@ def configure(data):
                 lifecycle.route(old)
             lifecycle.start(old)
         else:
-            (state_dir() / "config.json").unlink(missing_ok=True)
-            if settings["mode"] == "coordinator":
-                lifecycle.route(settings, delete=True)
+            try:
+                lifecycle.destroy()
+            finally:
+                (state_dir() / "config.json").unlink(missing_ok=True)
+                if settings["mode"] == "coordinator":
+                    with contextlib.suppress(Exception):
+                        lifecycle.route(settings, delete=True)
         raise
     return {"configured": True}
 
@@ -95,13 +107,15 @@ def view():
         "sync_token_configured": bool(settings.get("sync_token")),
         "notifications": {**{k: notices.get(k, "") for k in ("url", "topic")},
             "enabled": notices.get("enabled", False), "token_configured": bool(notices.get("token"))},
+        "protected_networks": settings.get("protected_networks", []),
+        "active_protection": protected_networks(),
         "whitelist": snapshot["whitelist"], "whitelist_revision": snapshot["whitelist_revision"],
         "bans": node.bans(), "sources": node.get("sources", [])}
 
 
 def diagnostics():
     node = Node(state_dir() / "node.sqlite3")
-    with database(node.path) as db:
+    with database(node.path, write=False) as db:
         pending = db.execute("SELECT count(*) FROM pending").fetchone()[0]
         notifications = db.execute("SELECT count(*) FROM notifications").fetchone()[0]
     return {"revision": node.snapshot()["revision"], "pending_bans": pending,

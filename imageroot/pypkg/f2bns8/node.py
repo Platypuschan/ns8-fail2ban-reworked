@@ -2,7 +2,7 @@
 
 import json
 import uuid
-from .common import address, allowed, database, now, safe_text
+from .common import address, allowed, database, now, protected_networks, safe_text
 
 
 class Node:
@@ -12,6 +12,7 @@ class Node:
             db.execute("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS pending (id TEXT PRIMARY KEY, ip TEXT UNIQUE NOT NULL, event TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, event TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, retry_after REAL NOT NULL DEFAULT 0)")
+            db.execute("CREATE TABLE IF NOT EXISTS acknowledgments (id TEXT PRIMARY KEY)")
 
     @staticmethod
     def _snapshot(db):
@@ -36,7 +37,7 @@ class Node:
         ip = address(ip)
         with database(self.path) as db:
             snapshot = self._snapshot(db)
-            if allowed(ip, snapshot["whitelist"]) or any(b["ip"] == ip for b in snapshot["bans"]):
+            if allowed(ip, snapshot["whitelist"] + snapshot.get("protected", []) + protected_networks()) or any(b["ip"] == ip for b in snapshot["bans"]):
                 return None
             if db.execute("SELECT 1 FROM pending WHERE ip=?", (ip,)).fetchone():
                 return None
@@ -53,21 +54,44 @@ class Node:
         with database(self.path, write=False) as db:
             return [json.loads(r[0]) for r in db.execute("SELECT event FROM pending ORDER BY rowid LIMIT 100")]
 
+    def acknowledgments(self):
+        with database(self.path, write=False) as db:
+            return [row[0] for row in db.execute("SELECT id FROM acknowledgments LIMIT 100")]
+
+    def confirm_acknowledgments(self, ids):
+        if ids:
+            with database(self.path) as db:
+                db.executemany("DELETE FROM acknowledgments WHERE id=?", ((item,) for item in ids))
+
     def apply(self, snapshot):
+        if snapshot.get("unchanged"):
+            old = self.snapshot()
+            if old["identity"] and old["identity"] != snapshot["identity"]:
+                raise ValueError("Coordinator identity changed")
+            if snapshot["revision"] > old["revision"]:
+                raise ValueError("Invalid unchanged response")
+            return
         with database(self.path) as db:
             old = self._snapshot(db)
             if old["identity"] and old["identity"] != snapshot["identity"]:
                 raise ValueError("Coordinator identity changed")
-            if snapshot.get("unchanged"):
-                if snapshot["revision"] != old["revision"]:
-                    raise ValueError("Invalid unchanged response")
-                return
             if snapshot["revision"] < old["revision"]:
                 # A manual task and background sync can complete out of order.
                 # Consume acknowledgements but never roll the cache backwards.
                 snapshot = {**old, "results": snapshot.get("results", [])}
+            elif snapshot.get("delta"):
+                bans = {ban["ip"]: ban for ban in old["bans"]}
+                for change in snapshot["changes"]:
+                    if change["detail"] is None:
+                        bans.pop(change["ip"], None)
+                    else:
+                        bans[change["ip"]] = change["detail"]
+                snapshot = {**old, **snapshot, "bans": list(bans.values()),
+                    "revocations": {**old.get("revocations", {}), **snapshot["revocations"]},
+                    "policy_revocations": {**old.get("policy_revocations", {}), **snapshot["policy_revocations"]}}
             for result in snapshot.get("results", []):
                 db.execute("DELETE FROM pending WHERE id=?", (result["id"],))
+                db.execute("INSERT OR IGNORE INTO acknowledgments VALUES (?)", (result["id"],))
                 if result["result"] in ("whitelisted", "revoked"):
                     db.execute("DELETE FROM notifications WHERE id=?", (result["id"],))
             for row in db.execute("SELECT id,ip,event FROM pending").fetchall():
@@ -75,10 +99,14 @@ class Node:
                 revoked = snapshot.get("revocations", {}).get(row["ip"], 0) > base
                 revoked = revoked or any(rev > base and allowed(row["ip"], [net])
                     for net, rev in snapshot.get("policy_revocations", {}).items())
-                if revoked or allowed(row["ip"], snapshot["whitelist"]):
+                if revoked or allowed(row["ip"], snapshot["whitelist"] + snapshot.get("protected", [])):
                     db.execute("DELETE FROM pending WHERE id=?", (row["id"],))
                     db.execute("DELETE FROM notifications WHERE id=?", (row["id"],))
-            clean = {k: v for k, v in snapshot.items() if k != "results"}
+            clean = {k: v for k, v in snapshot.items() if k not in ("results", "delta", "changes")}
+            outstanding = [json.loads(row[0])["base_revision"] for row in db.execute("SELECT event FROM pending")]
+            floor = min(outstanding) if outstanding else clean["revision"]
+            clean["revocations"] = {ip: rev for ip, rev in clean.get("revocations", {}).items() if rev > floor}
+            clean["policy_revocations"] = {net: rev for net, rev in clean.get("policy_revocations", {}).items() if rev > floor}
             db.execute("INSERT OR REPLACE INTO kv VALUES ('snapshot',?)", (json.dumps(clean),))
 
     def bans(self):
@@ -88,4 +116,5 @@ class Node:
             for row in db.execute("SELECT event FROM pending"):
                 event = json.loads(row[0])
                 bans.setdefault(event["ip"], {k: v for k, v in event.items() if k != "matches"})["pending"] = True
-            return [b for b in bans.values() if not allowed(b["ip"], snapshot["whitelist"])]
+            protection = snapshot["whitelist"] + snapshot.get("protected", []) + protected_networks()
+            return [b for b in bans.values() if not allowed(b["ip"], protection)]

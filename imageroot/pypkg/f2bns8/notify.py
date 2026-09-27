@@ -35,7 +35,7 @@ def main():
     node = Node(state_dir() / "node.sqlite3")
     while True:
         settings = config().get("notifications", {})
-        with database(node.path) as db:
+        with database(node.path, write=not settings.get("enabled")) as db:
             if not settings.get("enabled"):
                 db.execute("DELETE FROM notifications")
             row = db.execute("SELECT * FROM notifications WHERE retry_after<=? ORDER BY rowid LIMIT 1", (time.time(),)).fetchone()

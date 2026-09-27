@@ -14,10 +14,10 @@ from f2bns8.collector import Collector, owns_record
 from f2bns8.node import Node
 from f2bns8.registry import Registry
 from f2bns8.transport import make_server, request
-from f2bns8.firewall import rules
+from f2bns8.firewall import apply as apply_firewall, rules
 from f2bns8.notify import message
 from f2bns8.parsers import parse
-from f2bns8.actions import validate
+from f2bns8.actions import configure, validate
 
 
 class RegistryTests(unittest.TestCase):
@@ -49,8 +49,8 @@ class RegistryTests(unittest.TestCase):
 
     def test_sync_enforces_same_state_without_peer_notifications(self):
         self.ban(self.a)
-        self.sync(self.a)
-        self.sync(self.b)
+        self.assertTrue(self.sync(self.a)["delta"])
+        self.assertTrue(self.sync(self.b)["delta"])
         self.assertEqual(self.a.bans(), self.b.bans())
         self.assertEqual(self.notifications(self.a), 1)
         self.assertEqual(self.notifications(self.b), 0)
@@ -95,7 +95,8 @@ class RegistryTests(unittest.TestCase):
         second = self.registry.sync(*args)
         self.assertEqual(first["revision"], second["revision"])
         self.registry.unban([event["ip"]])
-        self.assertFalse(self.registry.sync(*args)["bans"])
+        self.registry.sync(*args)
+        self.assertFalse(self.registry.snapshot()["bans"])
 
     def test_whitelist_removes_bans_and_wins_over_offline_events(self):
         self.ban(self.a)
@@ -144,6 +145,42 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(len(self.registry.snapshot()["bans"]), 1)
         self.assertEqual(self.registry.snapshot()["revision"], 1)
 
+    def test_acknowledged_events_are_removed_without_losing_revocation_guard(self):
+        event = self.ban(self.a)
+        self.sync(self.a)
+        ids = self.a.acknowledgments()
+        self.assertEqual(ids, [event["id"]])
+        state = self.a.snapshot()
+        self.registry.sync(self.ids[self.a], "node", state["revision"], state["identity"], [], acks=ids)
+        self.a.confirm_acknowledgments(ids)
+        with database(self.registry.path, write=False) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM events").fetchone()[0], 0)
+        self.registry.unban([event["ip"]])
+        result = self.registry.sync(self.ids[self.a], "node", state["revision"], state["identity"], [event])
+        self.assertEqual(result["results"][0]["result"], "revoked")
+
+    def test_protected_peer_address_revokes_a_ban_on_all_nodes(self):
+        self.ban(self.a)
+        self.sync(self.a)
+        state = self.b.snapshot()
+        protected = ["198.51.100.23/32", "10.5.4.0/24"]
+        result = self.registry.sync(self.ids[self.b], "peer", state["revision"], state["identity"], [], protected)
+        self.b.apply(result)
+        self.sync(self.a)
+        self.assertFalse(self.a.bans())
+        self.assertFalse(self.b.bans())
+        self.assertIn("10.5.4.0/24", result["protected"])
+        self.assertIsNone(self.ban(self.a))
+
+    def test_unchanged_sync_has_no_full_snapshot(self):
+        result = self.sync(self.a)
+        self.assertTrue(result["unchanged"])
+        self.assertNotIn("bans", result)
+
+    def test_local_address_is_protected_before_first_sync(self):
+        with patch("f2bns8.node.protected_networks", return_value=["198.51.100.23/32"]):
+            self.assertIsNone(self.ban(self.a))
+
     def test_coordinator_identity_and_rollback_are_detected(self):
         with self.assertRaisesRegex(ValueError, "identity"):
             self.registry.sync(self.ids[self.a], "x", 0, "different", [])
@@ -173,6 +210,40 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(error.exception.code, 401)
             self.assertEqual(request(base, "a" * 43, "/v1/state")["revision"], 0)
             self.assertEqual(request(base, "a" * 43, "/v1/unban", {"ips": ["198.51.100.23"]})["revision"], 1)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_failed_token_attempts_are_limited_without_blocking_peers(self):
+        server = make_server(self.registry, "a" * 43)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = "http://127.0.0.1:" + str(server.server_port)
+            for _ in range(20):
+                with self.assertRaises(HTTPError) as error:
+                    request(base, "wrong", "/v1/state")
+                self.assertEqual(error.exception.code, 401)
+            with self.assertRaises(HTTPError) as error:
+                request(base, "wrong", "/v1/state")
+            self.assertEqual(error.exception.code, 429)
+            self.assertEqual(request(base, "a" * 43, "/v1/state")["revision"], 0)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_large_snapshot_is_paged_and_reassembled(self):
+        class LargeRegistry:
+            @staticmethod
+            def snapshot():
+                return {"identity": "test", "revision": 4, "bans": [{"ip": "198.51.100.1", "note": "x" * 1024}] * 2300}
+        server = make_server(LargeRegistry(), "a" * 43)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            state = request("http://127.0.0.1:" + str(server.server_port), "a" * 43, "/v1/state")
+            self.assertEqual(len(state["bans"]), 2300)
+            self.assertEqual(state["revision"], 4)
         finally:
             server.shutdown()
             server.server_close()
@@ -225,6 +296,20 @@ class ParserTests(unittest.TestCase):
 
 
 class CollectorTests(unittest.TestCase):
+    def test_one_ssh_connection_does_not_count_multiple_log_lines(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"F2B_STATE_DIR": directory}):
+            collector = Collector()
+            messages = [
+                "Invalid user admin from 198.51.100.7 port 4444",
+                "Failed password for invalid user admin from 198.51.100.7 port 4444 ssh2",
+                "Connection closed by invalid user admin 198.51.100.7 port 4444 [preauth]",
+            ]
+            with patch.object(collector, "emit") as emit:
+                for message in messages:
+                    collector.journal({"_SYSTEMD_UNIT": "sshd@1.service", "_PID": "42",
+                        "MESSAGE": message, "__REALTIME_TIMESTAMP": str(int(datetime.now(timezone.utc).timestamp() * 1000000))})
+            self.assertEqual(emit.call_count, 1)
+
     def test_rootful_samba_and_exact_module_boundary(self):
         samba = {"module": "samba1", "jail": "samba", "uid": "0", "uid_ranges": [(0, 1)]}
         self.assertTrue(owns_record(samba, {"_UID": "0", "CONTAINER_NAME": "samba-dc"}))
@@ -264,6 +349,18 @@ class CollectorTests(unittest.TestCase):
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_first_configuration_failure_cleans_up_written_settings(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {
+            "F2B_STATE_DIR": directory, "MODULE_ID": "fail2ban1", "TCP_PORT": "20001"}), \
+                patch("f2bns8.actions.shutil.which", return_value="/usr/sbin/nft"), \
+                patch("f2bns8.actions.lifecycle.route"), \
+                patch("f2bns8.actions.lifecycle.destroy") as destroy, \
+                patch("f2bns8.actions.lifecycle.start", side_effect=RuntimeError("start failed")):
+            with self.assertRaisesRegex(RuntimeError, "start failed"):
+                configure({"mode": "coordinator", "public_url": "https://bans.example.org"})
+            destroy.assert_called_once()
+            self.assertFalse((Path(directory) / "config.json").exists())
+
     def test_whitelist_ranges(self):
         self.assertEqual(networks(["192.0.2.1-192.0.2.2"]), ["192.0.2.1/32", "192.0.2.2/32"])
         self.assertEqual(networks(["192.0.2.17/24"]), ["192.0.2.0/24"])
@@ -290,6 +387,20 @@ class ConfigurationTests(unittest.TestCase):
         self.assertNotIn("flush ruleset", content)
         with self.assertRaises(ValueError):
             rules("fail2ban1", ["1.2.3.4; flush ruleset"], True)
+
+    def test_firewall_recreates_a_damaged_existing_table(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch("f2bns8.firewall.state_dir", return_value=Path(directory)), \
+                patch("f2bns8.firewall.subprocess.run") as command:
+            command.side_effect = [
+                type("Result", (), {"returncode": 0, "stdout": "table inet damaged { set banned4 { type ipv4_addr; } }"})(),
+                type("Result", (), {"returncode": 0})(),
+            ]
+            apply_firewall("fail2ban1", ["198.51.100.1"])
+            batch = command.call_args_list[1].kwargs["input"]
+            self.assertIn("delete table inet ns8_f2b_", batch)
+            self.assertIn("add chain inet ns8_f2b_", batch)
+            self.assertIn("198.51.100.1", batch)
 
     @patch.dict("os.environ", {"MODULE_ID": "fail2ban1", "TCP_PORT": "20001"})
     def test_settings_keep_tokens_without_echoing_them(self):

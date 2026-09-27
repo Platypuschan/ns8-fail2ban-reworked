@@ -57,8 +57,8 @@ def install():
             if not image:
                 raise RuntimeError("FAIL2BAN_ENGINE_IMAGE is missing from the NS8 image environment")
             start = ("/usr/bin/podman run --rm --replace --name " + module + "-engine"
-                + " --network=none --cap-drop=all --security-opt=no-new-privileges --read-only"
-                + " --tmpfs=/run:rw,nosuid,nodev --volume=" + str(root / "engine") + ":/state:z"
+                + " --network=none --user=65532:65532 --cap-drop=all --security-opt=no-new-privileges --read-only"
+                + " --tmpfs=/run:rw,nosuid,nodev,mode=1777 --volume=" + str(root / "engine") + ":/state:z"
                 + " --volume=" + str(root / "logs") + ":/state/logs:ro,z"
                 + " --env=F2B_STATE_DIR=/state --log-driver=journald " + image)
             extra = "ExecStop=/usr/bin/podman stop --ignore -t 15 " + module + "-engine\n"
@@ -93,6 +93,7 @@ def start(settings):
 
 def destroy():
     from .firewall import remove
+    from .collector import restore_samba_logging
     module = os.environ["MODULE_ID"]
     for part in PARTS:
         name = module + "-" + part + ".service"
@@ -100,8 +101,11 @@ def destroy():
         Path("/etc/systemd/system", name).unlink(missing_ok=True)
     systemctl("daemon-reload")
     remove(module)
-    if config().get("mode") == "coordinator":
-        route(config(), delete=True)
+    try:
+        restore_samba_logging()
+    finally:
+        if config().get("mode") == "coordinator":
+            route(config(), delete=True)
 
 
 def backup():
@@ -137,6 +141,7 @@ def restore(clone=False):
         # A second authority with copied state would fork the common ban list.
         # Clones enroll as peers of the original coordinator instead.
         settings["node_id"] = str(uuid.uuid4())
+        settings["protected_networks"] = []
         if settings["mode"] == "coordinator":
             settings.update(mode="peer", sync_url=settings["public_url"])
         for suffix in ("", "-wal", "-shm"):

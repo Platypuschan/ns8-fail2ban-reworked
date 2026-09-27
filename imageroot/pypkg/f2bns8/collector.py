@@ -79,14 +79,34 @@ def owns_record(source, record):
 
 
 def samba_logging(source):
-    """Persist audit failures and apply the level live without restarting Samba."""
+    """Apply auditing live and remember the saved level for removal."""
     module = source["module"]
     old = source["environment"].get("SAMBA_LOGLEVEL", "1 auth_audit:0 auth_json_audit:0")
     level = re.search(r"(?:^|\s)auth_json_audit:(\d+)(?:\s|$)", old)
     new = old if level and int(level[1]) >= 2 else re.sub(r"(?:^|\s)auth_json_audit:\S+", "", old) + " auth_json_audit:2"
     # Apply this only to the running process. Persisting the environment would
     # change Samba's settings permanently after this module is removed.
+    if new != old:
+        marker = state_dir() / "samba-levels.json"
+        levels = read_json(marker, {})
+        if module not in levels:
+            levels[module] = old
+            atomic_json(marker, levels)
     run_module(module, ["podman", "exec", "samba-dc", "smbcontrol", "all", "debug", new])
+
+
+def restore_samba_logging():
+    marker = state_dir() / "samba-levels.json"
+    levels = read_json(marker, {})
+    for module, level in list(levels.items()):
+        running = subprocess.run(["runagent", "-m", module, "podman", "ps",
+            "--filter", "name=^samba-dc$", "--format", "{{.Names}}"],
+            text=True, capture_output=True, timeout=30)
+        if running.returncode == 0 and "samba-dc" in running.stdout.splitlines():
+            run_module(module, ["podman", "exec", "samba-dc", "smbcontrol", "all", "debug", level])
+        del levels[module]
+        atomic_json(marker, levels)
+    marker.unlink(missing_ok=True)
 
 
 def log_files(source):
@@ -111,6 +131,7 @@ class Collector:
         self.sources = []
         self.files = []
         self.last_save = 0
+        self.ssh_sessions = {}
         (self.root / "logs").mkdir(exist_ok=True)
 
     def refresh(self):
@@ -160,7 +181,24 @@ class Collector:
         when = int(record.get("__REALTIME_TIMESTAMP", "0")) / 1000000
         unit = record.get("_SYSTEMD_UNIT", "")
         if unit in ("sshd.service", "ssh.service") or unit.startswith(("sshd@", "ssh@")) and unit.endswith(".service") or record.get("SYSLOG_IDENTIFIER") == "sshd":
-            self.emit("sshd", "host", message, when)
+            ip = parse("sshd", message)
+            port = re.search(r"\bport (\d+)(?:\s|$)", message)
+            key = (record.get("_PID", record.get("SYSLOG_PID", "")), ip, port[1] if port else "")
+            if ip:
+                old = self.ssh_sessions.get(key)
+                previous = old[0] if old and when - old[1] < 600 else None
+                category = "invalid" if "Invalid user " in message else (
+                    "closed" if "Connection closed by invalid user " in message else (
+                    "maximum" if "maximum authentication attempts exceeded " in message else "failed"))
+                # sshd emits several lines for one rejected connection. Count
+                # an invalid user and its first failure/closure only once.
+                duplicate = category in ("closed", "maximum") and previous is not None
+                duplicate = duplicate or category == "failed" and previous == "invalid"
+                if not duplicate:
+                    self.emit("sshd", "host", message, when)
+                self.ssh_sessions[key] = ("failed" if category == "failed" else category, when)
+                if len(self.ssh_sessions) > 2048:
+                    self.ssh_sessions = {key: value for key, value in self.ssh_sessions.items() if when - value[1] < 600}
         else:
             for source in self.sources:
                 if source["jail"] == "organizr":

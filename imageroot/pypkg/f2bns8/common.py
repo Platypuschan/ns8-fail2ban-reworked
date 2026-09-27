@@ -7,8 +7,11 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
 import sqlite3
+import subprocess
 import tempfile
+import time
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
@@ -56,7 +59,7 @@ def database(path, write=True):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     new = not Path(path).exists()
     db = sqlite3.connect(str(path), timeout=15, isolation_level=None)
-    if write:
+    if new:
         os.chmod(path, 0o600)
     db.row_factory = sqlite3.Row
     if new:
@@ -113,6 +116,38 @@ def _parsed_networks(whitelist):
 def allowed(ip, whitelist):
     item = ipaddress.ip_address(address(ip))
     return any(item in net for net in _parsed_networks(tuple(whitelist)))
+
+
+@functools.lru_cache(maxsize=2)
+def _local_networks(interval):
+    try:
+        result = subprocess.run(["ip", "-json", "address", "show"], text=True,
+            capture_output=True, check=True, timeout=5)
+        interfaces = json.loads(result.stdout)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        interfaces = []
+        try:
+            interfaces = [{"addr_info": [{"local": item[4][0]}
+                for item in socket.getaddrinfo(socket.gethostname(), None)]}]
+        except OSError:
+            pass
+    addresses = []
+    for interface in interfaces:
+        for item in interface.get("addr_info", []):
+            try:
+                ip = ipaddress.ip_address(item["local"].split("%", 1)[0])
+                if not ip.is_loopback and not ip.is_unspecified:
+                    addresses.append(str(ipaddress.ip_network((ip, ip.max_prefixlen))))
+            except (KeyError, ValueError):
+                continue
+    return tuple(sorted(set(addresses)))
+
+
+def protected_networks():
+    # Exact interface addresses are protected on every node. Additional VPN
+    # ranges are explicitly configured by the administrator for this cluster.
+    return sorted(set(_local_networks(int(time.monotonic() // 60))
+        + tuple(config().get("protected_networks", []))))
 
 
 def url(value, https_only=True):

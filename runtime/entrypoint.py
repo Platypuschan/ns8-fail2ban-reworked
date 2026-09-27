@@ -3,12 +3,4 @@ import os
 from f2bns8.engine_config import generate
 
 generate("/state", "/run/fail2ban/config", "/opt/fail2ban/config", "/opt/ns8_action.py")
-os.chown("/run/fail2ban", 65532, 65532)
-os.chown("/run/fail2ban/config", 65532, 65532)
-for directory, children, files in os.walk("/run/fail2ban/config"):
-    os.chown(directory, 65532, 65532)
-    for name in files:
-        os.chown(os.path.join(directory, name), 65532, 65532)
-os.setgid(65532)
-os.setuid(65532)
 os.execvp("python3", ["python3", "/opt/fail2ban/bin/fail2ban-server", "-c", "/run/fail2ban/config", "-f", "start"])
