@@ -75,6 +75,13 @@ class Node:
             old = self._snapshot(db)
             if old["identity"] and old["identity"] != snapshot["identity"]:
                 raise ValueError("Coordinator identity changed")
+            if snapshot.get("reset_pending") and snapshot["revision"] >= old["revision"]:
+                db.execute("DELETE FROM notifications WHERE id IN (SELECT id FROM pending)")
+                db.execute("DELETE FROM pending")
+                db.execute("DELETE FROM acknowledgments")
+            if snapshot["revision"] >= old["revision"] and "rebase_nonce" in snapshot:
+                db.execute("INSERT OR REPLACE INTO kv VALUES ('rebase_nonce',?)",
+                           (json.dumps(snapshot["rebase_nonce"]),))
             if snapshot["revision"] < old["revision"]:
                 # A manual task and background sync can complete out of order.
                 # Consume acknowledgements but never roll the cache backwards.
@@ -92,17 +99,19 @@ class Node:
             for result in snapshot.get("results", []):
                 db.execute("DELETE FROM pending WHERE id=?", (result["id"],))
                 db.execute("INSERT OR IGNORE INTO acknowledgments VALUES (?)", (result["id"],))
-                if result["result"] in ("whitelisted", "revoked"):
+                if result["result"] in ("whitelisted", "revoked", "expired"):
                     db.execute("DELETE FROM notifications WHERE id=?", (result["id"],))
             for row in db.execute("SELECT id,ip,event FROM pending").fetchall():
                 base = json.loads(row["event"])["base_revision"]
-                revoked = snapshot.get("revocations", {}).get(row["ip"], 0) > base
+                revoked = base < snapshot.get("retention_floor", 0)
+                revoked = revoked or snapshot.get("revocations", {}).get(row["ip"], 0) > base
                 revoked = revoked or any(rev > base and allowed(row["ip"], [net])
                     for net, rev in snapshot.get("policy_revocations", {}).items())
                 if revoked or allowed(row["ip"], snapshot["whitelist"] + snapshot.get("protected", [])):
                     db.execute("DELETE FROM pending WHERE id=?", (row["id"],))
                     db.execute("DELETE FROM notifications WHERE id=?", (row["id"],))
-            clean = {k: v for k, v in snapshot.items() if k not in ("results", "delta", "changes")}
+            clean = {k: v for k, v in snapshot.items()
+                     if k not in ("results", "delta", "changes", "reset_pending", "rebase_nonce")}
             outstanding = [json.loads(row[0])["base_revision"] for row in db.execute("SELECT event FROM pending")]
             floor = min(outstanding) if outstanding else clean["revision"]
             clean["revocations"] = {ip: rev for ip, rev in clean.get("revocations", {}).items() if rev > floor}

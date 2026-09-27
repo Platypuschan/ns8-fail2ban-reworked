@@ -25,6 +25,7 @@ def synchronize(node, settings):
         "identity": snapshot["identity"], "revision": snapshot["revision"],
         "protected": protected_networks(),
         "acks": acks,
+        "rebase_ack": node.get("rebase_nonce", ""),
         "delta_supported": True,
         "events": [{k: v for k, v in event.items() if k != "matches"} for event in node.pending()]})
     node.apply(result)

@@ -21,19 +21,24 @@ scopes. This project targets NS8, including separate NS8 installations.
 - The coordinator includes an **SQLite database**. It is owned exclusively by
   the sync service, so PostgreSQL and a separately managed database service are
   unnecessary. Peers use an authenticated HTTPS API, never a shared SQLite file.
-- An offline node keeps its existing bans and whitelist indefinitely, enforces
-  new local bans immediately, and queues them for synchronization. Connected
-  nodes poll every three seconds. An unreachable node learns changes when it
-  reconnects; global manual operations require the coordinator to be reachable.
+- An offline node keeps its existing bans and whitelist and enforces new local
+  bans immediately. Connected nodes poll every three seconds. Offline changes
+  can be synchronized for up to **one week**. After a longer outage, the node
+  replaces its local cache with the coordinator's current state and discards
+  unsynchronized local bans; new failures can then create new bans. Global
+  manual operations require the coordinator to be reachable.
 - Connected peers receive only changed bans and policy updates. Large initial
   state transfers are paged. Acknowledged event records and peers unseen for
-  90 days are removed from the coordinator database; a returning peer can still
-  resynchronize from the coordinator. Permanent unban and whitelist revocation
-  markers are retained so arbitrarily delayed offline events cannot resurrect
-  previously cleared bans. Consequently, those markers can grow over time.
-- Manual unban tombstones and whitelist history prevent delayed messages from
-  resurrecting obsolete bans. New failures **after** the node learns of a manual
-  unban can trigger a new ban. Retried sync events are idempotent.
+  90 days are removed from the coordinator database. Unban and whitelist
+  revocation markers expire after one week. The coordinator rejects old events
+  and requires a confirmed full rebase of peers returning after a week or
+  behind the pruned revision, so expired history cannot resurrect cleared bans.
+  Older module versions cannot confirm the rebase and must be updated before
+  they can resume sending bans after such an outage.
+- Manual unban markers and whitelist history prevent delayed messages within
+  the supported offline window from resurrecting obsolete bans. New failures
+  **after** the node learns of a manual unban can trigger a new ban. Retried
+  sync events are idempotent.
 - Each node automatically protects its local interface addresses. Additional
   VPN, proxy and management networks can be entered per node and are shared
   with the coordinator. Include the complete inter-node VPN range when other

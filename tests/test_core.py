@@ -1,7 +1,8 @@
 import concurrent.futures
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
+import time
 from pathlib import Path
 import tempfile
 import threading
@@ -31,13 +32,19 @@ class RegistryTests(unittest.TestCase):
         self.ids = {node: str(uuid.uuid4()) for node in (self.a, self.b)}
         for node in (self.a, self.b):
             node.apply(self.registry.snapshot())
+            node.apply(self.registry.sync(self.ids[node], "node", 0,
+                                          node.snapshot()["identity"], [], delta_supported=True))
+            node.apply(self.registry.sync(self.ids[node], "node", 0,
+                                          node.snapshot()["identity"], [],
+                                          delta_supported=True, rebase_ack=node.get("rebase_nonce")))
 
     def tearDown(self):
         self.temp.cleanup()
 
     def sync(self, node):
         state = node.snapshot()
-        result = self.registry.sync(self.ids[node], "NS8 / fail2ban1", state["revision"], state["identity"], node.pending(), delta_supported=True)
+        result = self.registry.sync(self.ids[node], "NS8 / fail2ban1", state["revision"], state["identity"],
+                                    node.pending(), delta_supported=True, rebase_ack=node.get("rebase_nonce", ""))
         node.apply(result)
         return result
 
@@ -140,7 +147,7 @@ class RegistryTests(unittest.TestCase):
         events = [self.ban(node) for node in (self.a, self.b)]
         state = self.a.snapshot()
         def submit(i):
-            return self.registry.sync(str(uuid.uuid4()), str(i), 0, state["identity"], [events[i]])
+            return self.registry.sync(self.ids[(self.a, self.b)[i]], str(i), 0, state["identity"], [events[i]])
         with concurrent.futures.ThreadPoolExecutor(2) as pool:
             list(pool.map(submit, (0, 1)))
         self.assertEqual(len(self.registry.snapshot()["bans"]), 1)
@@ -159,6 +166,16 @@ class RegistryTests(unittest.TestCase):
         self.registry.unban([event["ip"]])
         result = self.registry.sync(self.ids[self.a], "node", state["revision"], state["identity"], [event])
         self.assertEqual(result["results"][0]["result"], "revoked")
+
+    def test_unacknowledged_event_records_expire_after_one_week(self):
+        self.ban(self.a)
+        self.sync(self.a)
+        with database(self.registry.path) as db:
+            db.execute("UPDATE events SET created_on=?", (time.time() - 8 * 86400,))
+        self.sync(self.b)
+        with database(self.registry.path, write=False) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM events").fetchone()[0], 0)
+        self.assertEqual(len(self.registry.snapshot()["bans"]), 1)
 
     def test_protected_peer_address_revokes_a_ban_on_all_nodes(self):
         self.ban(self.a)
@@ -195,6 +212,21 @@ class RegistryTests(unittest.TestCase):
             self.assertIn("node", [row[1] for row in db.execute("PRAGMA table_info(events)")])
             self.assertEqual(db.execute("SELECT count(*) FROM events").fetchone()[0], 0)
 
+    def test_existing_revocation_markers_get_a_full_week_after_upgrade(self):
+        path = self.root / "upgrade.db"
+        with sqlite3.connect(path) as db:
+            db.execute("CREATE TABLE bans (ip TEXT PRIMARY KEY, active INTEGER NOT NULL, "
+                       "revoked_at INTEGER NOT NULL DEFAULT 0, detail TEXT NOT NULL, "
+                       "changed_at INTEGER NOT NULL DEFAULT 0)")
+            db.execute("INSERT INTO bans VALUES ('198.51.100.24',0,2,'{}',2)")
+            db.execute("CREATE TABLE policy_revocations (network TEXT PRIMARY KEY, revision INTEGER NOT NULL)")
+            db.execute("INSERT INTO policy_revocations VALUES ('198.51.100.0/24',3)")
+        Registry(path)
+        with database(path, write=False) as db:
+            self.assertGreater(db.execute("SELECT revoked_on FROM bans").fetchone()[0], time.time() - 60)
+            self.assertGreater(db.execute("SELECT created_on FROM policy_revocations").fetchone()[0], time.time() - 60)
+            self.assertIn("rebase_nonce", [row[1] for row in db.execute("PRAGMA table_info(nodes)")])
+
     def test_stale_peer_and_its_unacknowledged_events_are_pruned(self):
         self.ban(self.a)
         self.sync(self.a)
@@ -205,6 +237,80 @@ class RegistryTests(unittest.TestCase):
         with database(self.registry.path, write=False) as db:
             self.assertFalse(db.execute("SELECT 1 FROM nodes WHERE id=?", (self.ids[self.a],)).fetchone())
             self.assertEqual(db.execute("SELECT count(*) FROM events WHERE node=?", (self.ids[self.a],)).fetchone()[0], 0)
+
+    def test_one_week_revocation_retention_rebases_old_peer(self):
+        self.ban(self.a)
+        self.ban(self.b)
+        self.sync(self.a)
+        self.registry.unban(["198.51.100.23"])
+        with database(self.registry.path) as db:
+            db.execute("UPDATE bans SET revoked_on=? WHERE ip=?", (time.time() - 8 * 86400, "198.51.100.23"))
+        result = self.sync(self.b)
+        self.assertTrue(result["reset_pending"])
+        self.assertFalse(self.b.pending())
+        self.assertFalse(self.b.bans())
+        self.assertEqual(self.notifications(self.b), 0)
+        with database(self.registry.path, write=False) as db:
+            self.assertFalse(db.execute("SELECT 1 FROM bans WHERE ip=?", ("198.51.100.23",)).fetchone())
+        self.assertGreaterEqual(result["retention_floor"], 2)
+        self.ban(self.b, "198.51.100.24")
+        self.sync(self.b)
+        self.assertEqual([row["ip"] for row in self.registry.snapshot()["bans"]], ["198.51.100.24"])
+
+    def test_old_whitelist_history_does_not_resurrect_offline_ban(self):
+        self.ban(self.b)
+        state = self.registry.set_whitelist(["198.51.100.0/24"], 0)
+        self.registry.set_whitelist([], state["whitelist_revision"])
+        with database(self.registry.path) as db:
+            db.execute("UPDATE policy_revocations SET created_on=?", (time.time() - 8 * 86400,))
+        result = self.sync(self.b)
+        self.assertTrue(result["reset_pending"])
+        self.assertFalse(self.registry.snapshot()["bans"])
+        with database(self.registry.path, write=False) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM policy_revocations").fetchone()[0], 0)
+
+    def test_peer_offline_over_one_week_discards_local_outbox(self):
+        self.ban(self.b)
+        with database(self.registry.path) as db:
+            db.execute("UPDATE nodes SET seen=? WHERE id=?",
+                       ((datetime.now(timezone.utc) - timedelta(days=8)).isoformat(), self.ids[self.b]))
+        result = self.sync(self.b)
+        self.assertTrue(result["reset_pending"])
+        self.assertFalse(self.b.pending())
+        self.assertFalse(self.b.bans())
+        self.assertEqual(self.notifications(self.b), 0)
+
+    def test_old_peer_cannot_replay_without_acknowledging_rebase(self):
+        event = self.ban(self.b)
+        state = self.b.snapshot()
+        with database(self.registry.path) as db:
+            db.execute("UPDATE nodes SET seen=? WHERE id=?",
+                       ((datetime.now(timezone.utc) - timedelta(days=8)).isoformat(), self.ids[self.b]))
+        first = self.registry.sync(self.ids[self.b], "old peer", state["revision"],
+                                   state["identity"], [event])
+        second = self.registry.sync(self.ids[self.b], "old peer", state["revision"],
+                                    state["identity"], [event])
+        self.assertTrue(first["reset_pending"])
+        self.assertTrue(second["reset_pending"])
+        self.assertEqual(second["results"][0]["result"], "expired")
+        self.assertFalse(self.registry.snapshot()["bans"])
+        self.b.apply(first)
+        self.assertEqual(self.b.get("rebase_nonce"), first["rebase_nonce"])
+        self.sync(self.b)
+        self.assertEqual(self.b.get("rebase_nonce"), "")
+        self.ban(self.b)
+        self.sync(self.b)
+        self.assertEqual(len(self.registry.snapshot()["bans"]), 1)
+
+    def test_events_older_than_one_week_expire_for_connected_peer(self):
+        event = self.ban(self.b)
+        event["since"] = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+        with database(self.b.path) as db:
+            db.execute("UPDATE pending SET event=? WHERE id=?", (json.dumps(event), event["id"]))
+        result = self.sync(self.b)
+        self.assertEqual(result["results"][0]["result"], "expired")
+        self.assertFalse(self.b.pending())
+        self.assertEqual(self.notifications(self.b), 0)
 
     def test_coordinator_identity_and_rollback_are_detected(self):
         with self.assertRaisesRegex(ValueError, "identity"):
