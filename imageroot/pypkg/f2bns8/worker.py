@@ -1,12 +1,14 @@
 """Firewall reconciliation is independent of coordinator and ntfy availability."""
 import json
 import os
+import stat
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timezone
 from . import firewall
-from .common import config, networks, now, protected_networks, read_json, state_dir
+from .common import config, networks, now, protected_networks, state_dir
 from .node import Node
 from .transport import call
 
@@ -75,13 +77,38 @@ def reconcile_engine(node):
         control({"batch": changes})
 
 
+# Largest engine event accepted; Fail2ban matches are a few log lines.
+MAX_ENGINE_EVENT = 1024 * 1024
+
+
+def read_engine_event(path):
+    """Read one event file written by the isolated engine container."""
+    # Do not follow links or block on special files the engine could create.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError("not a regular file")
+        raw = stream.read(MAX_ENGINE_EVENT + 1)
+    if len(raw) > MAX_ENGINE_EVENT:
+        raise ValueError("event too large")
+    event = json.loads(raw)
+    return (event["ip"], event["jail"], event["module"], event["node"],
+            event["matches"], event["notify"])
+
+
 def consume_engine(node):
     for path in sorted((state_dir() / "engine" / "outbox").glob("*.json")):
-        event = read_json(path)
-        if event:
-            node.ban(event["ip"], event["jail"], event["module"], event["node"],
-                     event["matches"], event["notify"])
-        path.unlink()
+        try:
+            fields = read_engine_event(path)
+            node.ban(*fields)
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            # An unusable event must not block the events after it. Database
+            # errors are not caught here, so the event is retried later.
+            print(f"Discarding invalid engine event {path.name}: {type(error).__name__}",
+                  file=sys.stderr, flush=True)
+        path.unlink(missing_ok=True)
 
 
 def main():
