@@ -1,0 +1,133 @@
+name: "Clean up registry"
+
+# Delete ghcr.io image versions that nothing uses any more:
+# - module versions tagged only sha-<commit> (superseded development builds)
+#   and untagged module versions;
+# - engine versions that no remaining module version references through its
+#   org.nethserver.images label.
+# Release tags (SemVer), dev and latest are always kept, together with every
+# engine they reference. Versions younger than a day are kept, so a running
+# publish job cannot lose an engine before its module is pushed. Both images
+# are single-arch manifests without attestations, so untagged versions are
+# never children of a kept index.
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/clean-registry.yml"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: clean-registry
+  cancel-in-progress: false
+
+jobs:
+  delete_images:
+    name: "Delete stale ghcr.io images"
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Delete superseded module and engine images
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          MODULE: fail2ban-reworked
+          ENGINE: fail2ban-engine
+          # Pull requests only list what would be deleted
+          DRY_RUN: ${{ github.event_name == 'pull_request' }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$(gh api "users/$OWNER" -q .type)" == "Organization" ]]; then
+            scope="orgs/$OWNER"
+          else
+            scope="users/$OWNER"
+          fi
+          owner="${OWNER,,}"
+          cutoff="$(date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%SZ)"
+
+          versions() {
+            gh api --paginate "$scope/packages/container/$1/versions?per_page=100" \
+              -q '.[] | [.id, .updated_at, .name, (.metadata.container.tags | join(","))] | @tsv'
+          }
+
+          # Engine references (repository:tag) of one module manifest digest
+          engine_refs() {
+            local token manifest config
+            token="$(curl -fsS -u "$GITHUB_ACTOR:$GH_TOKEN" \
+              "https://ghcr.io/token?scope=repository:$owner/$MODULE:pull" | jq -er .token)"
+            manifest="$(curl -fsS -H "Authorization: Bearer $token" \
+              -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+              "https://ghcr.io/v2/$owner/$MODULE/manifests/$1")"
+            config="$(jq -er .config.digest <<< "$manifest")"
+            curl -fsSL -H "Authorization: Bearer $token" \
+              "https://ghcr.io/v2/$owner/$MODULE/blobs/$config" \
+              | jq -er '.config.Labels["org.nethserver.images"]' | tr ' ' '\n' | sed -n "s#^ghcr.io/$owner/##p"
+          }
+
+          delete_version() {
+            echo "Delete $1 version $2 (tags: ${3:-none}, updated $4)"
+            if [[ "$DRY_RUN" != "true" ]]; then
+              gh api --input /dev/null -X DELETE "$scope/packages/container/$1/versions/$2"
+            fi
+          }
+
+          : > referenced
+          : > delete-module
+          releases=0
+          while IFS=$'\t' read -r id updated digest tags; do
+            keep=""
+            for tag in ${tags//,/ }; do
+              if [[ "$tag" =~ ^(latest|dev|v?[0-9]+\.[0-9]+\.[0-9]+([-+].*)?)$ ]]; then
+                keep="$tag"
+                releases=$((releases + 1))
+                break
+              fi
+            done
+            if [[ -z "$keep" && "$updated" > "$cutoff" ]]; then
+              keep="recent"
+            fi
+            if [[ -n "$keep" ]]; then
+              # Fails the job, before anything is deleted, if a label is unreadable
+              engine_refs "$digest" >> referenced
+            else
+              printf '%s\t%s\t%s\n' "$id" "$updated" "$tags" >> delete-module
+            fi
+          done < <(versions "$MODULE")
+
+          sort -u -o referenced referenced
+          if (( releases == 0 )) || ! grep -q "^$ENGINE:" referenced; then
+            echo "No kept module version or engine reference found; not deleting anything." >&2
+            exit 1
+          fi
+          echo "Engine images in use:"
+          sed 's/^/  /' referenced
+
+          deleted=0
+          while IFS=$'\t' read -r id updated tags; do
+            delete_version "$MODULE" "$id" "$tags" "$updated"
+            deleted=$((deleted + 1))
+          done < delete-module
+
+          while IFS=$'\t' read -r id updated digest tags; do
+            keep=""
+            for tag in ${tags//,/ }; do
+              if grep -qxF -- "$ENGINE:$tag" referenced; then
+                keep="$tag"
+                break
+              fi
+            done
+            if [[ -n "$keep" || "$updated" > "$cutoff" ]]; then
+              continue
+            fi
+            delete_version "$ENGINE" "$id" "$tags" "$updated"
+            deleted=$((deleted + 1))
+          done < <(versions "$ENGINE")
+
+          echo "Stale versions: $deleted (dry run: $DRY_RUN)" >> "$GITHUB_STEP_SUMMARY"
