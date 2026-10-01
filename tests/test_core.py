@@ -1,6 +1,7 @@
 import concurrent.futures
 from datetime import datetime, timedelta, timezone
 import json
+import os
 import sqlite3
 import time
 from pathlib import Path
@@ -20,6 +21,7 @@ from f2bns8.firewall import apply as apply_firewall, rules
 from f2bns8.notify import message
 from f2bns8.parsers import parse
 from f2bns8.actions import configure, validate
+from f2bns8.worker import consume_engine
 
 
 class RegistryTests(unittest.TestCase):
@@ -454,6 +456,25 @@ class CollectorTests(unittest.TestCase):
                         "MESSAGE": message, "__REALTIME_TIMESTAMP": str(int(datetime.now(timezone.utc).timestamp() * 1000000))})
             self.assertEqual(emit.call_count, 1)
 
+    def test_ssh_session_cache_stays_bounded_during_a_flood(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"F2B_STATE_DIR": directory}):
+            collector = Collector()
+            start = datetime.now(timezone.utc).timestamp()
+            largest = 0
+            with patch.object(collector, "emit") as emit:
+                for port in range(5000):
+                    collector.journal({"_SYSTEMD_UNIT": "sshd@1.service", "_PID": "42",
+                        "MESSAGE": f"Invalid user admin from 198.51.100.7 port {port}",
+                        "__REALTIME_TIMESTAMP": str(int((start + port / 1000) * 1000000))})
+                    largest = max(largest, len(collector.ssh_sessions))
+                self.assertLessEqual(largest, 2049)
+                self.assertEqual(emit.call_count, 5000)
+                # The newest connections are still recognized as one session.
+                collector.journal({"_SYSTEMD_UNIT": "sshd@1.service", "_PID": "42",
+                    "MESSAGE": "Connection closed by invalid user admin 198.51.100.7 port 4999 [preauth]",
+                    "__REALTIME_TIMESTAMP": str(int((start + 5) * 1000000))})
+                self.assertEqual(emit.call_count, 5000)
+
     def test_rootful_samba_and_exact_module_boundary(self):
         samba = {"module": "samba1", "jail": "samba", "uid": "0", "uid_ranges": [(0, 1)]}
         self.assertTrue(owns_record(samba, {"_UID": "0", "CONTAINER_NAME": "samba-dc"}))
@@ -494,6 +515,50 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(len(detected), 1)
             self.assertIn("198.51.100.4", detected[0])
             self.assertIn("Wrong Password", detected[0])
+
+
+class EngineOutboxTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        patcher = patch.dict("os.environ", {"F2B_STATE_DIR": self.temp.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.outbox = self.root / "engine" / "outbox"
+        self.outbox.mkdir(parents=True)
+        self.node = Node(self.root / "node.sqlite3")
+        self.node.apply(Registry(self.root / "registry.db").snapshot())
+
+    def event(self, ip):
+        return {"ip": ip, "jail": "sshd", "module": "host", "node": "node",
+                "matches": "Failed password", "notify": False}
+
+    def test_invalid_events_are_discarded_without_blocking_later_bans(self):
+        secret = self.root / "secret.json"
+        secret.write_text(json.dumps(self.event("198.51.100.66")))
+        (self.outbox / "1-broken.json").write_text("{not json")
+        (self.outbox / "2-fields.json").write_text(json.dumps({"ip": "198.51.100.61"}))
+        (self.outbox / "3-address.json").write_text(json.dumps(self.event("not-an-address")))
+        (self.outbox / "4-large.json").write_text(json.dumps(self.event("198.51.100.64")) + " " * (1024 * 1024))
+        (self.outbox / "5-link.json").symlink_to(secret)
+        os.mkfifo(self.outbox / "6-fifo.json")
+        (self.outbox / "7-valid.json").write_text(json.dumps(self.event("198.51.100.67")))
+        consume_engine(self.node)
+        self.assertEqual([b["ip"] for b in self.node.bans()], ["198.51.100.67"])
+        self.assertEqual(list(self.outbox.iterdir()), [])
+        self.assertTrue(secret.exists())
+
+    def test_database_errors_keep_the_event_for_a_retry(self):
+        path = self.outbox / "event.json"
+        path.write_text(json.dumps(self.event("198.51.100.70")))
+        with patch.object(self.node, "ban", side_effect=sqlite3.OperationalError("database is locked")):
+            with self.assertRaises(sqlite3.OperationalError):
+                consume_engine(self.node)
+        self.assertTrue(path.exists())
+        consume_engine(self.node)
+        self.assertEqual([b["ip"] for b in self.node.bans()], ["198.51.100.70"])
+        self.assertFalse(path.exists())
 
 
 class ConfigurationTests(unittest.TestCase):
