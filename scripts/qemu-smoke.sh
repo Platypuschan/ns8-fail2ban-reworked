@@ -84,7 +84,10 @@ test "$ready" = 1
 ssh_ci 'cloud-init status --wait --long'
 ssh_ci 'curl -fsSL --retry 3 https://raw.githubusercontent.com/NethServer/ns8-core/ns8-stable/core/install.sh -o /root/install-ns8.sh && bash /root/install-ns8.sh'
 ssh_ci 'create-cluster 10.0.2.15:55820 10.5.4.0/24 Nethesis,1234'
-for name in ns8-smoke.py ns8-smoke.sh ns8-notify-sink.py; do
+for name in ns8-smoke.py ns8-smoke.sh ns8-notify-sink.py ns8-upgrade.sh ns8-upgrade-seed.py ns8-upgrade-check.py; do
     ssh_ci "cat > /tmp/$name" <"tests/$name"
 done
+# Update the last published release first; raise this after every release.
+previous_release="${PREVIOUS_RELEASE:-ghcr.io/platypuschan/fail2ban-reworked:0.1.0}"
+ssh_ci bash /tmp/ns8-upgrade.sh "$previous_release" 10.0.2.2:5000/ns8-ci/fail2ban-reworked:ci
 ssh_ci bash /tmp/ns8-smoke.sh 10.0.2.2:5000/ns8-ci/fail2ban-reworked:ci
