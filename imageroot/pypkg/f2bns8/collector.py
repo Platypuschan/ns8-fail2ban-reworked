@@ -214,7 +214,10 @@ class Collector:
                     self.emit("sshd", "host", message, when)
                 self.ssh_sessions[key] = ("failed" if category == "failed" else category, when)
                 if len(self.ssh_sessions) > 2048:
-                    self.ssh_sessions = {key: value for key, value in self.ssh_sessions.items() if when - value[1] < 600}
+                    recent = [item for item in self.ssh_sessions.items() if when - item[1][1] < 600]
+                    # Many distinct connections within ten minutes must not grow
+                    # the cache without bound or refilter it on every line.
+                    self.ssh_sessions = dict(sorted(recent, key=lambda item: item[1][1])[-1024:])
         else:
             for source in self.sources:
                 if source["jail"] == "organizr":
