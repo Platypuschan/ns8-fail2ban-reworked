@@ -20,6 +20,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - name: Check catalog version
+        run: .github/scripts/check-catalog-version
       - name: Promote the tested image once
         shell: bash
         env:
@@ -43,7 +46,9 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y skopeo
           if skopeo inspect --raw "docker://$image:$version" >/dev/null 2>&1; then
-            echo "$image:$version already exists; keeping its original tested build."
+            # The version check above passed, so only files outside the image
+            # changed since CATALOG_VERSION was set.
+            echo "::notice::$image:$version already exists; no module image change since that release."
             exit 0
           fi
 

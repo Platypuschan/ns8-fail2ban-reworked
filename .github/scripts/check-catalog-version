@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+"""Require a CATALOG_VERSION bump for every change that alters the module image.
+
+With --base, the working tree is compared with the merge base of that ref
+(pull requests and feature branches). Without --base, it is compared with the
+commit that last changed CATALOG_VERSION (the default branch after a merge).
+"""
+
+import argparse
+import re
+import subprocess
+import sys
+
+VERSION_FILE = "CATALOG_VERSION"
+# Paths that end up in the published module image or its Fail2ban engine.
+RELEASE_PATHS = ("imageroot", "ui", "runtime", "build-images.sh")
+SEMVER = re.compile(
+    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+    r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
+)
+
+
+class VersionError(Exception):
+    pass
+
+
+def parse_version(text):
+    version = text.strip()
+    match = SEMVER.fullmatch(version)
+    if not match:
+        raise VersionError(f"invalid SemVer version in {VERSION_FILE}: {version!r}")
+    major, minor, patch = (int(value) for value in match.group(1, 2, 3))
+    prerelease = match.group(4)
+    if prerelease is None:
+        return (major, minor, patch, 1, ())
+    identifiers = []
+    for item in prerelease.split("."):
+        if item.isdigit():
+            if len(item) > 1 and item.startswith("0"):
+                raise VersionError(f"invalid SemVer prerelease in {VERSION_FILE}: {version!r}")
+            identifiers.append((0, int(item), ""))
+        else:
+            identifiers.append((1, 0, item))
+    return (major, minor, patch, 0, tuple(identifiers))
+
+
+def git(*args, cwd=None):
+    return subprocess.run(
+        ("git",) + args, cwd=cwd, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def changed_release_files(since, cwd=None):
+    output = git("diff", "--name-only", since, "HEAD", "--", *RELEASE_PATHS, cwd=cwd)
+    return [line for line in output.splitlines() if line]
+
+
+def check(base=None, cwd=None):
+    """Return a list of error messages; empty when the version is consistent."""
+    current_text = git("show", f"HEAD:{VERSION_FILE}", cwd=cwd)
+    current = parse_version(current_text)
+    if base:
+        since = git("merge-base", base, "HEAD", cwd=cwd)
+        changed = changed_release_files(since, cwd=cwd)
+        if not changed:
+            return []
+        previous_text = git("show", f"{since}:{VERSION_FILE}", cwd=cwd)
+        if current > parse_version(previous_text):
+            return []
+        return [
+            f"{VERSION_FILE} is still {current_text.strip()} although the module "
+            f"image changes; raise it above {previous_text.strip()}. Changed: "
+            + ", ".join(changed)
+        ]
+
+    # --first-parent: a merge commit that brings in a version bump counts as
+    # the bump, even if the merged branch changed the image after it.
+    since = git("log", "-1", "--first-parent", "--format=%H", "--", VERSION_FILE, cwd=cwd)
+    if not since:
+        return []
+    changed = changed_release_files(since, cwd=cwd)
+    if not changed:
+        return []
+    return [
+        f"The module image changed after {VERSION_FILE} was set to "
+        f"{current_text.strip()} in {since[:12]}; this build cannot be "
+        "published to the catalog until the version is raised. Changed: "
+        + ", ".join(changed)
+    ]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--base", help="compare with the merge base of this ref")
+    args = parser.parse_args()
+    try:
+        errors = check(args.base)
+    except (VersionError, subprocess.CalledProcessError) as error:
+        detail = getattr(error, "stderr", "") or ""
+        print(f"::error::{error} {detail}".strip(), file=sys.stderr)
+        return 1
+    for message in errors:
+        print(f"::error file={VERSION_FILE}::{message}", file=sys.stderr)
+    if not errors:
+        print(f"{VERSION_FILE} is consistent with the module image changes.")
+    return 1 if errors else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
