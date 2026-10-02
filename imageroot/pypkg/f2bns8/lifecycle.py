@@ -3,11 +3,16 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
+import stat
 import subprocess
 import uuid
 from .common import atomic_json, config, public_host, state_dir
 
 PARTS = ("coordinator", "worker", "collector", "notify", "engine", "firewall")
+ENGINE_UID = 65532
+# Files the isolated engine creates in its own state directory.
+ENGINE_FILES = ("fail2ban.sqlite3", "fail2ban.sqlite3-journal", "fail2ban.sqlite3-wal",
+                "fail2ban.sqlite3-shm", "fail2ban.sock")
 
 
 def systemctl(*args, check=True):
@@ -29,6 +34,22 @@ def route(settings, delete=False):
         raise RuntimeError("NS8 reverse proxy configuration failed")
 
 
+def give_engine_ownership(engine):
+    """Return the engine's own files to it after NS8 reset the tree to root."""
+    # NS8 changes the whole module directory to root:root when it extracts an
+    # updated image. The engine then cannot open its database and restarts.
+    for path in (engine, engine / "outbox", *(engine / name for name in ENGINE_FILES)):
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            continue
+        # Never follow links or hand over a file that is also linked elsewhere.
+        if stat.S_ISLNK(info.st_mode) or (not stat.S_ISDIR(info.st_mode) and info.st_nlink > 1):
+            continue
+        if (info.st_uid, info.st_gid) != (ENGINE_UID, ENGINE_UID):
+            os.chown(path, ENGINE_UID, ENGINE_UID, follow_symlinks=False)
+
+
 def install():
     module = os.environ["MODULE_ID"]
     root = state_dir()
@@ -41,8 +62,7 @@ def install():
         log.touch(exist_ok=True)
         os.chmod(log, 0o644)
     (root / "engine" / "outbox").mkdir(parents=True, exist_ok=True)
-    os.chown(root / "engine", 65532, 65532)
-    os.chown(root / "engine" / "outbox", 65532, 65532)
+    give_engine_ownership(root / "engine")
     os.chmod(root / "engine", 0o700)
     os.chmod(root / "engine" / "outbox", 0o700)
     atomic_json(root / "engine" / "meta.json", {"node_name": config().get("node_name", ""),

@@ -22,6 +22,7 @@ from f2bns8.notify import message
 from f2bns8.parsers import parse
 from f2bns8.actions import configure, validate
 from f2bns8.worker import consume_engine
+from f2bns8.lifecycle import give_engine_ownership
 
 
 class RegistryTests(unittest.TestCase):
@@ -559,6 +560,28 @@ class EngineOutboxTests(unittest.TestCase):
         consume_engine(self.node)
         self.assertEqual([b["ip"] for b in self.node.bans()], ["198.51.100.70"])
         self.assertFalse(path.exists())
+
+
+class EngineOwnershipTests(unittest.TestCase):
+    def test_update_returns_engine_files_without_following_links(self):
+        # NS8 resets the module tree to root:root when it extracts an update.
+        with tempfile.TemporaryDirectory() as directory:
+            engine = Path(directory) / "engine"
+            (engine / "outbox").mkdir(parents=True)
+            for name in ("fail2ban.sqlite3", "fail2ban.sqlite3-journal", "fail2ban.sock", "meta.json"):
+                (engine / name).write_text("")
+            outside = Path(directory) / "outside"
+            outside.write_text("")
+            (engine / "fail2ban.sqlite3-wal").symlink_to(outside)
+            os.link(outside, engine / "fail2ban.sqlite3-shm")
+            with patch("f2bns8.lifecycle.os.chown") as chown:
+                give_engine_ownership(engine)
+            changed = {call.args[0] for call in chown.call_args_list}
+            self.assertEqual(changed, {engine, engine / "outbox", engine / "fail2ban.sqlite3",
+                                       engine / "fail2ban.sqlite3-journal", engine / "fail2ban.sock"})
+            for call in chown.call_args_list:
+                self.assertEqual(call.args[1:], (65532, 65532))
+                self.assertFalse(call.kwargs["follow_symlinks"])
 
 
 class ConfigurationTests(unittest.TestCase):
