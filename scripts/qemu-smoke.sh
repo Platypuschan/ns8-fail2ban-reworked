@@ -88,6 +88,6 @@ for name in ns8-smoke.py ns8-smoke.sh ns8-notify-sink.py ns8-upgrade.sh ns8-upgr
     ssh_ci "cat > /tmp/$name" <"tests/$name"
 done
 # Update the last published release first; raise this after every release.
-previous_release="${PREVIOUS_RELEASE:-ghcr.io/platypuschan/fail2ban-reworked:0.2.0}"
+previous_release="${PREVIOUS_RELEASE:-ghcr.io/platypuschan/fail2ban-reworked:0.2.1}"
 ssh_ci bash /tmp/ns8-upgrade.sh "$previous_release" 10.0.2.2:5000/ns8-ci/fail2ban-reworked:ci
 ssh_ci bash /tmp/ns8-smoke.sh 10.0.2.2:5000/ns8-ci/fail2ban-reworked:ci
