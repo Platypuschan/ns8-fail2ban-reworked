@@ -191,6 +191,15 @@ hostname uses a self-signed certificate. Real ACME certificate issuance,
 complete NS8 backup/restore and live Gitea/Organizr/Samba authentication remain
 deployment checks; those application parsers are covered by log fixtures.
 
+Before that, the VM test installs the last published release, seeds a ban and a
+whitelist entry, updates it to the tested image and checks that both survive.
+`.github/scripts/previous-release` looks that release up in GHCR: the newest
+stable tag that is not newer than `CATALOG_VERSION` (`PREVIOUS_RELEASE`
+overrides it). Every change to `imageroot/`, `ui/`, `runtime/` or
+`build-images.sh` needs a higher `CATALOG_VERSION`. Validation fails otherwise
+(`.github/scripts/check-catalog-version`), and so does the catalog promotion,
+because an existing version tag is never overwritten.
+
 ## References
 
 - [NS8 Organizr module](https://github.com/Platypuschan/ns8-organizr-reworked): native Vue/Carbon UI, tasks, routing and packaging.
