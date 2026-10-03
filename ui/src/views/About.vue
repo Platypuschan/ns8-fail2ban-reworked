@@ -12,16 +12,18 @@
         >{{ $t("f.documentation") }}</a
       >
     </p>
-    <img
-      :src="require('../assets/module_default_logo.png')"
-      width="96"
-      height="96"
-      alt="Fail2ban"
-    />
+    <img :src="defaultLogo" width="96" height="96" alt="Fail2ban" />
   </div>
 </template>
 <script>
-export default { name: "About" };
+import defaultLogo from "../assets/module_default_logo.png";
+
+export default {
+  name: "About",
+  data() {
+    return { defaultLogo };
+  },
+};
 </script>
 <style scoped>
 p,
