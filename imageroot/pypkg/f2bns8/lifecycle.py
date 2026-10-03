@@ -9,6 +9,11 @@ import uuid
 from .common import atomic_json, config, public_host, state_dir
 
 PARTS = ("coordinator", "worker", "collector", "notify", "engine", "firewall")
+# Services that write to the module directory; the firewall unit is a oneshot.
+QUIESCE = ("coordinator", "worker", "collector", "notify", "engine")
+# Transient timer that restarts stopped services if an update fails.
+RESUME = "-update-resume"
+RESUME_AFTER = 300
 ENGINE_UID = 65532
 # Files the isolated engine creates in its own state directory.
 ENGINE_FILES = ("fail2ban.sqlite3", "fail2ban.sqlite3-journal", "fail2ban.sqlite3-wal",
@@ -96,6 +101,37 @@ def install():
     systemctl("daemon-reload")
 
 
+def quiesce_for_update(request):
+    """Stop every writer before NS8 extracts an updated image.
+
+    NS8 extract-image runs `chown -cR` over the module directory under
+    `set -e`. A file that a running service deletes meanwhile (SQLite -wal and
+    -shm, engine outbox events, atomic-write temporaries) makes the update
+    fail. The firewall table stays in the kernel, so bans remain enforced.
+    """
+    module = os.environ["MODULE_ID"]
+    if not request.get("force") and request.get("module_url") == os.environ.get("IMAGE_URL"):
+        return []  # NS8 skips this update without extracting anything
+    units = [module + "-" + part + ".service" for part in QUIESCE
+             if systemctl("is-active", "--quiet", module + "-" + part + ".service", check=False).returncode == 0]
+    if not units:
+        return []
+    # Nothing else restarts the services if the update fails after this step.
+    cancel_update_resume()
+    subprocess.run(["systemd-run", "--unit=" + module + RESUME, "--on-active=" + str(RESUME_AFTER),
+                    "--timer-property=AccuracySec=1s", "/usr/bin/systemctl", "start"] + units,
+                   check=True, capture_output=True, text=True, timeout=90)
+    systemctl("stop", *units)
+    return units
+
+
+def cancel_update_resume():
+    module = os.environ["MODULE_ID"]
+    for suffix in (".timer", ".service"):
+        systemctl("stop", module + RESUME + suffix, check=False)
+        systemctl("reset-failed", module + RESUME + suffix, check=False)
+
+
 def start(settings):
     module = os.environ["MODULE_ID"]
     install()
@@ -109,6 +145,9 @@ def start(settings):
     for part in ("engine", "worker", "collector", "notify"):
         systemctl("enable", module + "-" + part + ".service")
         systemctl("restart", module + "-" + part + ".service")
+    # Only now: if anything above fails, the timer still restarts the services
+    # that update-module/04quiesce stopped.
+    cancel_update_resume()
 
 
 def destroy():

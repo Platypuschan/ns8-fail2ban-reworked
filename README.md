@@ -88,6 +88,18 @@ version; afterwards the Software Center offers new catalog versions again.
 `force` is only needed for moving development tags such as `:dev`, because
 it makes NS8 pull the image again even if the tag is already present locally.
 
+Before NS8 extracts the new image, the module stops its coordinator, worker,
+collector, notify and engine services (`actions/update-module/04quiesce`).
+NS8 changes the owner of every file in the module directory at that point and
+aborts the update if a running service deletes a file meanwhile, such as a
+SQLite `-wal` file. The firewall table stays loaded, so existing bans remain
+enforced; new failed logins are detected again once the update restarts the
+services. If the update fails after this step, a transient
+`<instance>-update-resume.timer` starts the services again after five minutes.
+This protection applies to updates *from* 0.2.2 on, because NS8 runs the
+update steps of the installed version. If an update from an older version
+stops with an `extract-image` error, run it again.
+
 ## Settings
 
 1. Install one instance per protected NS8 node.
