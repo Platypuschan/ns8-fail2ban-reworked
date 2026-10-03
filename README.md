@@ -64,12 +64,12 @@ To install from the command line, use a released version number from
 [`CATALOG_VERSION`](CATALOG_VERSION) or the catalog, for example:
 
 ```bash
-add-module ghcr.io/platypuschan/fail2ban-reworked:0.2.1 <node-id>
+add-module ghcr.io/platypuschan/fail2ban-reworked:0.3.0 <node-id>
 ```
 
 Do not install production instances from `:dev` or another development tag.
 NS8 takes the displayed module version from the image tag and offers updates
-only to instances with a SemVer version such as `0.2.1`; an instance installed
+only to instances with a SemVer version such as `0.3.0`; an instance installed
 from `:dev` never receives update notifications.
 
 Update every instance from the NS8 Software Center or from the command line
@@ -77,7 +77,7 @@ with the new version number:
 
 ```bash
 api-cli run update-module --data '{
-  "module_url": "ghcr.io/platypuschan/fail2ban-reworked:0.2.1",
+  "module_url": "ghcr.io/platypuschan/fail2ban-reworked:0.3.0",
   "instances": ["fail2ban-reworked1"]
 }'
 ```
@@ -96,9 +96,9 @@ SQLite `-wal` file. The firewall table stays loaded, so existing bans remain
 enforced; new failed logins are detected again once the update restarts the
 services. If the update fails after this step, a transient
 `<instance>-update-resume.timer` starts the services again after five minutes.
-This protection applies to updates *from* 0.2.2 on, because NS8 runs the
-update steps of the installed version. If an update from an older version
-stops with an `extract-image` error, run it again.
+
+Updates and restores are supported from the base version **0.2.2** onward.
+Install a new instance instead of updating an older release.
 
 ## Settings
 
