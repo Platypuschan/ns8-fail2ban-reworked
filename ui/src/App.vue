@@ -13,6 +13,7 @@
 </template>
 
 <script>
+import appMetadata from "../public/metadata.json";
 import AppSideMenu from "./components/AppSideMenu";
 import AppMobileSideMenu from "./components/AppMobileSideMenu";
 import { mapState, mapActions } from "vuex";
@@ -112,7 +113,7 @@ export default {
       this.setInstanceLabelInStore(taskResult.output.name);
     },
     setAppName() {
-      const metadata = require("../public/metadata.json");
+      const metadata = appMetadata;
       const appName = metadata.name;
       this.setAppNameInStore(appName);
     },

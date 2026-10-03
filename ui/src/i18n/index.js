@@ -1,8 +1,6 @@
 export async function loadLanguage(lang) {
   try {
-    const messages = await import(
-      /* webpackChunkName: "lang-[request]" */ `../../public/i18n/${lang}/translation.json`
-    );
+    const messages = await import(`../../public/i18n/${lang}/translation.json`);
     return messages;
   } catch (error) {
     console.warn(

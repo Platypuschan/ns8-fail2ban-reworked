@@ -64,7 +64,7 @@ To install from the command line, use a released version number from
 [`CATALOG_VERSION`](CATALOG_VERSION) or the catalog, for example:
 
 ```bash
-add-module ghcr.io/platypuschan/fail2ban-reworked:0.3.0 <node-id>
+add-module ghcr.io/platypuschan/fail2ban-reworked:0.3.1 <node-id>
 ```
 
 Do not install production instances from `:dev` or another development tag.
@@ -77,7 +77,7 @@ with the new version number:
 
 ```bash
 api-cli run update-module --data '{
-  "module_url": "ghcr.io/platypuschan/fail2ban-reworked:0.3.0",
+  "module_url": "ghcr.io/platypuschan/fail2ban-reworked:0.3.1",
   "instances": ["fail2ban-reworked1"]
 }'
 ```
@@ -211,7 +211,7 @@ PYTHONPATH=imageroot/pypkg FAIL2BAN_SOURCE=/path/to/fail2ban-1.1.1 \
 cd ui
 corepack yarn install --immutable
 corepack yarn exec eslint --ext .js,.vue src
-NODE_OPTIONS=--openssl-legacy-provider corepack yarn build
+corepack yarn build
 ```
 
 `build-images.sh` uses Buildah, Git and Node 24/Corepack to build the engine and
