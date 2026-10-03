@@ -51,6 +51,43 @@ scopes. This project targets NS8, including separate NS8 installations.
   a text attachment. After a lost HTTP acknowledgment, a retry can result in a
   duplicate notification; ntfy does not provide an idempotent publish API.
 
+## Install and update
+
+Read [Architecture and recovery](#architecture-and-recovery) first: the module is
+rootful and changes the host firewall. NS8 allows one instance per node.
+
+Add the [Platypuschan NS8 module catalog](https://github.com/Platypuschan/ns8-modules#add-the-repository)
+as a software repository and install **Fail2ban Reworked** from the NS8 Software
+Center.
+
+To install from the command line, use a released version number from
+[`CATALOG_VERSION`](CATALOG_VERSION) or the catalog, for example:
+
+```bash
+add-module ghcr.io/platypuschan/fail2ban-reworked:0.2.1 <node-id>
+```
+
+Do not install production instances from `:dev` or another development tag.
+NS8 takes the displayed module version from the image tag and offers updates
+only to instances with a SemVer version such as `0.2.1`; an instance installed
+from `:dev` never receives update notifications.
+
+Update every instance from the NS8 Software Center or from the command line
+with the new version number:
+
+```bash
+api-cli run update-module --data '{
+  "module_url": "ghcr.io/platypuschan/fail2ban-reworked:0.2.1",
+  "instances": ["fail2ban-reworked1"]
+}'
+```
+
+An instance that shows the version `dev` was installed or updated from the
+moving `:dev` tag. Update it once with the command above to a released
+version; afterwards the Software Center offers new catalog versions again.
+`force` is only needed for moving development tags such as `:dev`, because
+it makes NS8 pull the image again even if the tag is already present locally.
+
 ## Settings
 
 1. Install one instance per protected NS8 node.
@@ -175,8 +212,11 @@ The separate **Build installable NS8 images** workflow also supports manual
 builds and versioned `v*` tags. Both the `fail2ban-reworked` and `fail2ban-engine`
 packages must be public for unauthenticated NS8 installation.
 
+`:dev` is for testing a development build only. For production, install a
+released version as described in [Install and update](#install-and-update).
+
 ```bash
-# After the image build succeeds, on an NS8 cluster leader:
+# Development build only, on an NS8 cluster leader:
 add-module ghcr.io/platypuschan/fail2ban-reworked:dev <node-id>
 ```
 
