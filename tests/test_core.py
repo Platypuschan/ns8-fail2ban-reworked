@@ -206,31 +206,6 @@ class RegistryTests(unittest.TestCase):
         with patch("f2bns8.node.protected_networks", return_value=["198.51.100.23/32"]):
             self.assertIsNone(self.ban(self.a))
 
-    def test_legacy_event_rows_are_migrated_without_permanent_growth(self):
-        path = self.root / "legacy.db"
-        with sqlite3.connect(path) as db:
-            db.execute("CREATE TABLE events (id TEXT PRIMARY KEY, result TEXT NOT NULL)")
-            db.execute("INSERT INTO events VALUES (?,?)", (str(uuid.uuid4()), '{}'))
-        Registry(path)
-        with database(path, write=False) as db:
-            self.assertIn("node", [row[1] for row in db.execute("PRAGMA table_info(events)")])
-            self.assertEqual(db.execute("SELECT count(*) FROM events").fetchone()[0], 0)
-
-    def test_existing_revocation_markers_get_a_full_week_after_upgrade(self):
-        path = self.root / "upgrade.db"
-        with sqlite3.connect(path) as db:
-            db.execute("CREATE TABLE bans (ip TEXT PRIMARY KEY, active INTEGER NOT NULL, "
-                       "revoked_at INTEGER NOT NULL DEFAULT 0, detail TEXT NOT NULL, "
-                       "changed_at INTEGER NOT NULL DEFAULT 0)")
-            db.execute("INSERT INTO bans VALUES ('198.51.100.24',0,2,'{}',2)")
-            db.execute("CREATE TABLE policy_revocations (network TEXT PRIMARY KEY, revision INTEGER NOT NULL)")
-            db.execute("INSERT INTO policy_revocations VALUES ('198.51.100.0/24',3)")
-        Registry(path)
-        with database(path, write=False) as db:
-            self.assertGreater(db.execute("SELECT revoked_on FROM bans").fetchone()[0], time.time() - 60)
-            self.assertGreater(db.execute("SELECT created_on FROM policy_revocations").fetchone()[0], time.time() - 60)
-            self.assertIn("rebase_nonce", [row[1] for row in db.execute("PRAGMA table_info(nodes)")])
-
     def test_stale_peer_and_its_unacknowledged_events_are_pruned(self):
         self.ban(self.a)
         self.sync(self.a)

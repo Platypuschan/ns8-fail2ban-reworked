@@ -19,34 +19,10 @@ class Registry:
                                ("whitelist", '["127.0.0.0/8", "::1/128"]'),
                                ("identity", str(uuid.uuid4())), ("retention_floor", "0")):
                 db.execute("INSERT OR IGNORE INTO meta VALUES (?, ?)", (key, value))
-            db.execute("CREATE TABLE IF NOT EXISTS bans (ip TEXT PRIMARY KEY, active INTEGER NOT NULL, revoked_at INTEGER NOT NULL DEFAULT 0, detail TEXT NOT NULL, changed_at INTEGER NOT NULL DEFAULT 0)")
-            if "changed_at" not in {row[1] for row in db.execute("PRAGMA table_info(bans)")}:
-                db.execute("ALTER TABLE bans ADD COLUMN changed_at INTEGER NOT NULL DEFAULT 0")
-                db.execute("UPDATE bans SET changed_at=(SELECT CAST(value AS INTEGER) FROM meta WHERE key='revision')")
-            if "revoked_on" not in {row[1] for row in db.execute("PRAGMA table_info(bans)")}:
-                db.execute("ALTER TABLE bans ADD COLUMN revoked_on REAL NOT NULL DEFAULT 0")
-                # Existing markers have no creation time. Keep them for a full
-                # week after the upgrade before applying the retention policy.
-                db.execute("UPDATE bans SET revoked_on=? WHERE revoked_at>0", (time.time(),))
+            db.execute("CREATE TABLE IF NOT EXISTS bans (ip TEXT PRIMARY KEY, active INTEGER NOT NULL, revoked_at INTEGER NOT NULL DEFAULT 0, detail TEXT NOT NULL, changed_at INTEGER NOT NULL DEFAULT 0, revoked_on REAL NOT NULL DEFAULT 0)")
             db.execute("CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, result TEXT NOT NULL, node TEXT NOT NULL DEFAULT '', created_on REAL NOT NULL DEFAULT 0)")
-            if "node" not in {row[1] for row in db.execute("PRAGMA table_info(events)")}:
-                db.execute("ALTER TABLE events ADD COLUMN node TEXT NOT NULL DEFAULT ''")
-                # Old rows cannot be acknowledged by node ID. A replay still
-                # resolves against the active ban and permanent revocation
-                # markers, so they need not remain in the live event table.
-                db.execute("DELETE FROM events WHERE node=''")
-            if "created_on" not in {row[1] for row in db.execute("PRAGMA table_info(events)")}:
-                db.execute("ALTER TABLE events ADD COLUMN created_on REAL NOT NULL DEFAULT 0")
-                db.execute("UPDATE events SET created_on=?", (time.time(),))
             db.execute("CREATE TABLE IF NOT EXISTS nodes (id TEXT PRIMARY KEY, name TEXT NOT NULL, seen TEXT NOT NULL, revision INTEGER NOT NULL, protected TEXT NOT NULL DEFAULT '[]', rebase_nonce TEXT NOT NULL DEFAULT '')")
-            if "protected" not in {row[1] for row in db.execute("PRAGMA table_info(nodes)")}:
-                db.execute("ALTER TABLE nodes ADD COLUMN protected TEXT NOT NULL DEFAULT '[]'")
-            if "rebase_nonce" not in {row[1] for row in db.execute("PRAGMA table_info(nodes)")}:
-                db.execute("ALTER TABLE nodes ADD COLUMN rebase_nonce TEXT NOT NULL DEFAULT ''")
-            db.execute("CREATE TABLE IF NOT EXISTS policy_revocations (network TEXT PRIMARY KEY, revision INTEGER NOT NULL)")
-            if "created_on" not in {row[1] for row in db.execute("PRAGMA table_info(policy_revocations)")}:
-                db.execute("ALTER TABLE policy_revocations ADD COLUMN created_on REAL NOT NULL DEFAULT 0")
-                db.execute("UPDATE policy_revocations SET created_on=?", (time.time(),))
+            db.execute("CREATE TABLE IF NOT EXISTS policy_revocations (network TEXT PRIMARY KEY, revision INTEGER NOT NULL, created_on REAL NOT NULL DEFAULT 0)")
             db.execute("CREATE INDEX IF NOT EXISTS bans_revoked_on ON bans(revoked_on) WHERE revoked_at>0")
             db.execute("CREATE INDEX IF NOT EXISTS policy_created_on ON policy_revocations(created_on)")
             db.execute("CREATE INDEX IF NOT EXISTS events_created_on ON events(created_on)")
