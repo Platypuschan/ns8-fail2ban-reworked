@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 import sqlite3
+import subprocess
 import time
 from pathlib import Path
 import tempfile
@@ -22,7 +23,7 @@ from f2bns8.notify import message
 from f2bns8.parsers import parse
 from f2bns8.actions import configure, validate
 from f2bns8.worker import consume_engine
-from f2bns8.lifecycle import give_engine_ownership
+from f2bns8.lifecycle import give_engine_ownership, quiesce_for_update
 
 
 class RegistryTests(unittest.TestCase):
@@ -582,6 +583,52 @@ class EngineOwnershipTests(unittest.TestCase):
             for call in chown.call_args_list:
                 self.assertEqual(call.args[1:], (65532, 65532))
                 self.assertFalse(call.kwargs["follow_symlinks"])
+
+
+class UpdateQuiesceTests(unittest.TestCase):
+    # NS8 extract-image runs `chown -cR` under `set -e`; files that running
+    # services delete meanwhile (SQLite -wal/-shm) made updates fail.
+    ENV = {"MODULE_ID": "fail2ban1", "IMAGE_URL": "ghcr.io/x/fail2ban-reworked:0.2.2"}
+
+    def run_quiesce(self, request, active):
+        calls = []
+
+        def systemctl(*args, check=True):
+            calls.append(("systemctl",) + args)
+            running = args[0] != "is-active" or args[2][len("fail2ban1-"):-len(".service")] in active
+            return subprocess.CompletedProcess(args, 0 if running else 3)
+
+        def run(argv, **kwargs):
+            calls.append(tuple(argv))
+            return subprocess.CompletedProcess(argv, 0)
+
+        with patch.dict("os.environ", self.ENV), patch("f2bns8.lifecycle.systemctl", systemctl), \
+                patch("f2bns8.lifecycle.subprocess.run", run):
+            stopped = quiesce_for_update(request)
+        return stopped, [c for c in calls if c[:2] != ("systemctl", "is-active")]
+
+    def test_same_image_without_force_is_skipped_like_ns8_does(self):
+        stopped, calls = self.run_quiesce({"module_url": self.ENV["IMAGE_URL"]}, {"worker"})
+        self.assertEqual((stopped, calls), ([], []))
+
+    def test_schedules_resume_then_stops_only_running_writers(self):
+        stopped, calls = self.run_quiesce({"module_url": "ghcr.io/x/fail2ban-reworked:0.2.3"},
+                                          {"worker", "engine", "collector"})
+        units = ["fail2ban1-worker.service", "fail2ban1-collector.service", "fail2ban1-engine.service"]
+        self.assertEqual(stopped, units)
+        resume = [c for c in calls if c[0] == "systemd-run"]
+        self.assertEqual(len(resume), 1)
+        self.assertIn("--unit=fail2ban1-update-resume", resume[0])
+        self.assertEqual(list(resume[0][-len(units):]), units)
+        self.assertEqual(calls[-1], ("systemctl", "stop") + tuple(units))
+        self.assertLess(calls.index(resume[0]), len(calls) - 1, "resume is scheduled before stopping")
+
+    def test_forced_update_of_the_same_image_quiesces(self):
+        stopped, _ = self.run_quiesce({"module_url": self.ENV["IMAGE_URL"], "force": True}, {"notify"})
+        self.assertEqual(stopped, ["fail2ban1-notify.service"])
+
+    def test_firewall_and_stopped_services_are_left_alone(self):
+        self.assertEqual(self.run_quiesce({"module_url": "other"}, {"firewall"}), ([], []))
 
 
 class ConfigurationTests(unittest.TestCase):
