@@ -1,0 +1,8 @@
+#!/bin/bash
+# Runs before NS8's 05pullimages extracts the new image: stop the services
+# that write to the module directory, so its recursive chown cannot fail.
+# A failure here must not block the update; it only loses that protection.
+set -uo pipefail
+if ! python3 -m f2bns8.actions pre-update >/dev/null; then
+    echo "Could not stop the Fail2ban services before the update; continuing" >&2
+fi
