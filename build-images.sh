@@ -19,7 +19,7 @@ cp runtime/{Containerfile,entrypoint.py,control.py,ns8_action.py} "${context}/"
 cp -a imageroot/pypkg/f2bns8 "${context}/"
 buildah bud -t "${engine}" "${context}"
 if [[ ! -d ui/dist ]]; then
-    (cd ui && env -u YARN_NO_PROXY NODE_OPTIONS=--openssl-legacy-provider corepack yarn install --immutable && env -u YARN_NO_PROXY NODE_OPTIONS=--openssl-legacy-provider corepack yarn build)
+    (cd ui && env -u YARN_NO_PROXY corepack yarn install --immutable && env -u YARN_NO_PROXY corepack yarn build)
 fi
 builder="$(buildah from scratch)"
 buildah add "${builder}" imageroot /imageroot
