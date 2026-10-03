@@ -208,12 +208,12 @@ module. Upstream Fail2ban is pinned to commit
 commit, so updates select matching Python actions and node code. After all
 validation jobs, including the NS8 VM test, succeed on `main`, the workflow
 publishes `ghcr.io/platypuschan/fail2ban-reworked:dev` and a matching engine.
-The separate **Build installable NS8 images** workflow only makes manual
-development builds. Catalog versions come exclusively from the
-**Publish tested catalog version** workflow, which promotes the image tested on
-`main` once and never overwrites an existing version. Both the
-`fail2ban-reworked` and `fail2ban-engine` packages must be public for
-unauthenticated NS8 installation.
+No other workflow pushes `:dev`, so it always comes from a commit that passed
+the VM test. Catalog versions come exclusively from the
+**Publish tested catalog version** workflow, which promotes that `:dev` image
+once and never overwrites an existing version. Both the `fail2ban-reworked`
+and `fail2ban-engine` packages must be public for unauthenticated NS8
+installation.
 
 `:dev` is for testing a development build only. For production, install a
 released version as described in [Install and update](#install-and-update).
