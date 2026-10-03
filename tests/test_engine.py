@@ -50,7 +50,9 @@ class EngineTests(unittest.TestCase):
 
     def start(self):
         self.process = subprocess.Popen([sys.executable, str(Path(UPSTREAM) / "bin/fail2ban-server"), "-c", str(self.conf), "-f", "start"], env=self.env, stdout=self.log, stderr=subprocess.STDOUT)
-        self.wait_for(lambda: self.command(["status"])[0] == 0)
+        # The socket answers before the jails are started; wait for the jail
+        # the tests talk to, or the first command can fail with UnknownJail.
+        self.wait_for(lambda: self.command(["status", "sshd"])[0] == 0)
 
     def command(self, args):
         if not (self.engine / "fail2ban.sock").exists():
@@ -80,7 +82,11 @@ class EngineTests(unittest.TestCase):
     def stop(self):
         if self.process and self.process.poll() is None:
             self.command(["stop"])
-            self.process.wait(timeout=15)
+            try:
+                self.process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait()
 
     def tearDown(self):
         self.stop()
