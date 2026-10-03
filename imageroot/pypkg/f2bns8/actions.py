@@ -185,6 +185,8 @@ def execute(action, data):
     elif action == "update-module":
         if config():
             lifecycle.start(config())
+    elif action == "pre-update":
+        lifecycle.quiesce_for_update(data)
     elif action == "dump-state":
         lifecycle.backup()
     elif action != "create-module":
