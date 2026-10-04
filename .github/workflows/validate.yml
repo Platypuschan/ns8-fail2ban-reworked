@@ -68,6 +68,11 @@ jobs:
   images:
     needs: [tests, ui]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      module: ${{ steps.publish.outputs.module }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
@@ -78,82 +83,74 @@ jobs:
         id: build
         run: ./build-images.sh
         env:
-          REPOBASE: 10.0.2.2:5000/ns8-ci
-      - name: Export the tested image pair
+          REPOBASE: ghcr.io/${{ github.repository_owner }}
+      # The QEMU node pulls the module and, through org.nethserver.images, the
+      # engine from GHCR. Pull requests only build; their branch push tests.
+      - name: Publish the images under test
+        id: publish
+        if: github.event_name != 'pull_request'
         run: |
-          mkdir -p .build/images
-          buildah push "$ENGINE" "oci-archive:$PWD/.build/images/engine.oci"
-          buildah push "$MODULE" "oci-archive:$PWD/.build/images/module.oci"
-          printf '%s\n' "$ENGINE" > .build/images/engine-reference
+          printf '%s' "$REGISTRY_TOKEN" | buildah login --username "$GITHUB_ACTOR" --password-stdin ghcr.io
+          tag="sha-$(git rev-parse --short=12 HEAD)"
+          buildah push "$ENGINE" "docker://$ENGINE"
+          buildah push "$MODULE" "docker://$MODULE:$tag"
+          printf 'module=%s:%s\n' "$MODULE" "$tag" >> "$GITHUB_OUTPUT"
         env:
           ENGINE: ${{ steps.build.outputs.engine }}
           MODULE: ${{ steps.build.outputs.module }}
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ns8-images
-          path: .build/images
-          retention-days: 7
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   ns8:
+    name: "NS8 ${{ matrix.distro }} / ${{ matrix.scenario }}"
     needs: images
-    runs-on: ubuntu-24.04
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
-        with:
-          name: ns8-images
-          path: .build/images
-      - name: Install VM test tools
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y qemu-system-x86 qemu-utils cloud-image-utils skopeo acl
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - name: Install the browser for the UI check
-        run: |
-          python3 -m venv "$RUNNER_TEMP/ui-venv"
-          "$RUNNER_TEMP/ui-venv/bin/pip" install --quiet playwright==1.63.0
-          "$RUNNER_TEMP/ui-venv/bin/python" -m playwright install --with-deps chromium
-      - name: Install NS8 and exercise the module
-        run: bash scripts/qemu-smoke.sh
-        env:
-          UI_PYTHON: ${{ runner.temp }}/ui-venv/bin/python
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: ns8-smoke-diagnostics
-          path: tests/outputs
-          retention-days: 7
+    if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: rocky9
+            scenario: install
+            script: test-module-install.sh
+          - distro: rocky9
+            scenario: update
+            script: test-module-update.sh
+          - distro: debian13
+            scenario: install
+            script: test-module-install.sh
+          - distro: debian13
+            scenario: update
+            script: test-module-update.sh
+    # statuses: write lets each leg report continuous-integration/qemu/<distro>-<scenario>.
+    permissions:
+      contents: read
+      statuses: write
+    uses: NethServer/ns8-github-actions/.github/workflows/test-on-qemu.yml@v1
+    with:
+      distro: ${{ matrix.distro }}
+      image_url: ${{ needs.images.outputs.module }}
+      repo_ref: ${{ github.sha }}
+      version_tag: ${{ github.ref_name }}
+      artifact_suffix: ${{ matrix.scenario }}
+      status_suffix: ${{ matrix.scenario }}
+      script: ${{ matrix.script }}
+      timeout_minutes: 60
   publish-development-image:
-    needs: ns8
+    needs: [images, ns8]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
-        with:
-          name: module-ui
-          path: ui/dist
-      - name: Build validated source with public registry references
-        id: images
-        run: ./build-images.sh
-        env:
-          REPOBASE: ghcr.io/${{ github.repository_owner }}
-      - name: Log in to GHCR
-        run: printf '%s' "$REGISTRY_TOKEN" | buildah login --username "$GITHUB_ACTOR" --password-stdin ghcr.io
-        env:
-          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish development module and matching engine
+      - name: Publish the tested module as dev
         run: |
-          if [[ "$(git ls-remote origin refs/heads/main | cut -f1)" != "$GITHUB_SHA" ]]; then
+          if [[ "$(git ls-remote "https://github.com/$GITHUB_REPOSITORY" refs/heads/main | cut -f1)" != "$GITHUB_SHA" ]]; then
             echo 'A newer main commit exists; skip this development image.'
             exit 0
           fi
-          buildah push "$ENGINE" "docker://$ENGINE"
-          buildah push "$MODULE" "docker://$MODULE:dev"
-          buildah push "$MODULE" "docker://$MODULE:sha-${GITHUB_SHA:0:12}"
+          printf '%s' "$REGISTRY_TOKEN" | skopeo login --username "$GITHUB_ACTOR" --password-stdin ghcr.io
+          # The exact image the NS8 legs tested; its engine is already published.
+          skopeo copy --all "docker://$MODULE" "docker://${MODULE%:*}:dev"
+          echo "Published ${MODULE%:*}:dev from $MODULE" >> "$GITHUB_STEP_SUMMARY"
         env:
-          ENGINE: ${{ steps.images.outputs.engine }}
-          MODULE: ${{ steps.images.outputs.module }}
+          MODULE: ${{ needs.images.outputs.module }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
