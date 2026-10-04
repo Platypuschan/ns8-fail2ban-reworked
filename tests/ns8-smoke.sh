@@ -18,7 +18,4 @@ ip -n f2b-attacker link set lo up
 # The interface belongs to the same firewall zone as the normal management NIC.
 firewall-cmd --zone=public --add-interface=f2b-test
 runagent -m "$module" python3 /tmp/ns8-smoke.py
-remove-module --no-preserve "$module"
-if systemctl is-active --quiet "$module-worker.service"; then exit 1; fi
-if nft list tables | grep -q 'ns8_f2b_'; then exit 1; fi
-echo 'PASS: NS8 removal cleans up services, proxy route and module firewall'
+# The instance stays installed for the browser check; ns8-remove.sh removes it.

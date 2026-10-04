@@ -108,8 +108,15 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y qemu-system-x86 qemu-utils cloud-image-utils skopeo acl
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Install the browser for the UI check
+        run: |
+          python3 -m venv "$RUNNER_TEMP/ui-venv"
+          "$RUNNER_TEMP/ui-venv/bin/pip" install --quiet playwright==1.63.0
+          "$RUNNER_TEMP/ui-venv/bin/python" -m playwright install --with-deps chromium
       - name: Install NS8 and exercise the module
         run: bash scripts/qemu-smoke.sh
+        env:
+          UI_PYTHON: ${{ runner.temp }}/ui-venv/bin/python
       - uses: actions/upload-artifact@v4
         if: always()
         with:

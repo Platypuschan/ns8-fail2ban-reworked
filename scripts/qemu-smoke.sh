@@ -73,7 +73,7 @@ qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 4 -m 8192 \
     -device virtio-rng-pci \
     -drive "if=virtio,file=$ci_dir/base.qcow2,format=qcow2,cache=unsafe" \
     -drive "if=virtio,file=$ci_dir/seed.iso,format=raw,readonly=on" \
-    -netdev user,id=n0,hostfwd=tcp:127.0.0.1:2222-:22 \
+    -netdev user,id=n0,hostfwd=tcp:127.0.0.1:2222-:22,hostfwd=tcp:127.0.0.1:9443-:443 \
     -device virtio-net-pci,netdev=n0 -daemonize -pidfile "$ci_dir/qemu.pid"
 ready=0
 for attempt in $(seq 1 120); do
@@ -84,7 +84,7 @@ test "$ready" = 1
 ssh_ci 'cloud-init status --wait --long'
 ssh_ci 'curl -fsSL --retry 3 https://raw.githubusercontent.com/NethServer/ns8-core/ns8-stable/core/install.sh -o /root/install-ns8.sh && bash /root/install-ns8.sh'
 ssh_ci 'create-cluster 10.0.2.15:55820 10.5.4.0/24 Nethesis,1234'
-for name in ns8-smoke.py ns8-smoke.sh ns8-notify-sink.py ns8-upgrade.sh ns8-upgrade-seed.py ns8-upgrade-check.py; do
+for name in ns8-smoke.py ns8-smoke.sh ns8-remove.sh ns8-notify-sink.py ns8-upgrade.sh ns8-upgrade-seed.py ns8-upgrade-check.py; do
     ssh_ci "cat > /tmp/$name" <"tests/$name"
 done
 # Update the last published release first: the newest stable tag that is not
@@ -96,3 +96,6 @@ fi
 echo "Update scenario: $previous_release -> fail2ban-reworked:ci"
 ssh_ci bash /tmp/ns8-upgrade.sh "$previous_release" 10.0.2.2:5000/ns8-ci/fail2ban-reworked:ci
 ssh_ci bash /tmp/ns8-smoke.sh 10.0.2.2:5000/ns8-ci/fail2ban-reworked:ci
+# Open the module UI in a real browser while the configured instance exists.
+"${UI_PYTHON:-python3}" tests/ns8-ui-check.py https://127.0.0.1:9443 "$(ssh_ci cat /tmp/fail2ban-module-id)" tests/outputs
+ssh_ci bash /tmp/ns8-remove.sh
