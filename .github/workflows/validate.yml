@@ -100,25 +100,16 @@ jobs:
           MODULE: ${{ steps.build.outputs.module }}
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   ns8:
-    name: "NS8 ${{ matrix.distro }} / ${{ matrix.scenario }}"
+    # Static: a job skipped by its `if` (pull requests) shows its name with the
+    # matrix expressions unexpanded. The called job adds "<scenario> <distro>".
+    name: NS8
     needs: images
     if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - distro: rocky9
-            scenario: install
-            script: test-module-install.sh
-          - distro: rocky9
-            scenario: update
-            script: test-module-update.sh
-          - distro: debian13
-            scenario: install
-            script: test-module-install.sh
-          - distro: debian13
-            scenario: update
-            script: test-module-update.sh
+        distro: [rocky9, debian13]
+        scenario: [install, update]
     # statuses: write lets each leg report continuous-integration/qemu/<distro>-<scenario>.
     permissions:
       contents: read
@@ -131,7 +122,7 @@ jobs:
       version_tag: ${{ github.ref_name }}
       artifact_suffix: ${{ matrix.scenario }}
       status_suffix: ${{ matrix.scenario }}
-      script: ${{ matrix.script }}
+      script: test-module-${{ matrix.scenario }}.sh
       timeout_minutes: 60
   publish-development-image:
     needs: [images, ns8]
