@@ -9,7 +9,7 @@ jobs:
   tests:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Check catalog version
@@ -29,7 +29,7 @@ jobs:
             .github/scripts/check-catalog-version
           fi
       - name: Get pinned upstream Fail2ban
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: fail2ban/fail2ban
           ref: f60978618a101427b06924fc932b44350fec2b63
@@ -48,8 +48,8 @@ jobs:
   ui:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
       - run: corepack enable
@@ -61,7 +61,7 @@ jobs:
         working-directory: ui
       - name: Check the PNG logo required by NS8 module discovery
         run: test -n "$(find ui/dist/img -name '*logo*.png' -print -quit)"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: module-ui
           path: ui/dist
@@ -69,8 +69,8 @@ jobs:
     needs: [tests, ui]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: module-ui
           path: ui/dist
@@ -88,7 +88,7 @@ jobs:
         env:
           ENGINE: ${{ steps.build.outputs.engine }}
           MODULE: ${{ steps.build.outputs.module }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ns8-images
           path: .build/images
@@ -98,8 +98,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: ns8-images
           path: .build/images
@@ -117,7 +117,7 @@ jobs:
         run: bash scripts/qemu-smoke.sh
         env:
           UI_PYTHON: ${{ runner.temp }}/ui-venv/bin/python
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: ns8-smoke-diagnostics
@@ -131,8 +131,8 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: module-ui
           path: ui/dist
