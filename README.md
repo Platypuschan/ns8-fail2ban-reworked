@@ -217,15 +217,17 @@ corepack yarn build
 `build-images.sh` uses Buildah, Git and Node 24/Corepack to build the engine and
 module. Upstream Fail2ban is pinned to commit
 `f60978618a101427b06924fc932b44350fec2b63` (1.1.1). Engine tags include the module
-commit, so updates select matching Python actions and node code. After all
-validation jobs, including the NS8 VM test, succeed on `main`, the workflow
-publishes `ghcr.io/platypuschan/fail2ban-reworked:dev` and a matching engine.
-No other workflow pushes `:dev`, so it always comes from a commit that passed
-the VM test. Catalog versions come exclusively from the
-**Publish tested catalog version** workflow, which promotes that `:dev` image
-once and never overwrites an existing version. Both the `fail2ban-reworked`
-and `fail2ban-engine` packages must be public for unauthenticated NS8
-installation.
+commit, so updates select matching Python actions and node code. Every push
+publishes the module as `ghcr.io/platypuschan/fail2ban-reworked:sha-<commit>`
+together with its engine, because the NS8 VM tests pull both from GHCR.
+`clean-registry.yml` deletes these development builds again. After all
+validation jobs, including the NS8 VM tests, succeed on `main`, the workflow
+copies that tested `sha-<commit>` image to `:dev` without rebuilding it. No
+other workflow pushes `:dev`, so it is always an image that passed the VM tests.
+Catalog versions come exclusively from the **Publish tested catalog version**
+workflow, which promotes that `:dev` image once and never overwrites an existing
+version. Both the `fail2ban-reworked` and `fail2ban-engine` packages must be
+public for unauthenticated NS8 installation.
 
 `:dev` is for testing a development build only. For production, install a
 released version as described in [Install and update](#install-and-update).
@@ -235,23 +237,40 @@ released version as described in [Install and update](#install-and-update).
 add-module ghcr.io/platypuschan/fail2ban-reworked:dev <node-id>
 ```
 
-The validation workflow tests synchronization, outage/replay handling, concurrent
-updates, parsers, authenticated HTTP, a real Fail2ban process, actual nftables
-traffic enforcement in isolated network namespaces, and the production UI build.
-It also installs a fresh NS8 cluster in a disposable Rocky Linux 9 VM and checks
-module installation, five actual failed admin logins, blocking, ntfy delivery,
-the Traefik route, imported bans without notifications, manual unban, whitelist,
-SQLite backup snapshots, service restart and removal. The VM's reserved test
-hostname uses a self-signed certificate. Real ACME certificate issuance,
-complete NS8 backup/restore and live Gitea/Organizr/Samba authentication remain
-deployment checks; those application parsers are covered by log fixtures.
+The validation workflow tests synchronization, outage/replay handling,
+concurrent updates, parsers, authenticated HTTP, a real Fail2ban process, actual
+nftables traffic enforcement in isolated network namespaces, and the production
+UI build. It also runs
+[`test-on-qemu.yml`](https://github.com/NethServer/ns8-github-actions/blob/v1/docs/test-on-qemu.md)
+from `NethServer/ns8-github-actions`, which installs a fresh single-node NS8
+cluster in a disposable Rocky Linux 9 and Debian 13 VM. The install scenario
+(`test-module-install.sh`) checks module installation, five actual failed admin
+logins, blocking, ntfy delivery, the module UI in a real browser, the Traefik
+route, imported bans without notifications, manual unban, whitelist, SQLite
+backup snapshots, service restart and removal. The VM's reserved test hostname
+uses a self-signed certificate. Real ACME certificate issuance, complete NS8
+backup/restore and live Gitea/Organizr/Samba authentication remain deployment
+checks; those application parsers are covered by log fixtures.
 
-Before that, the VM test installs the last published release, seeds a ban and a
-whitelist entry, updates it to the tested image and checks that both survive.
+The update scenario (`test-module-update.sh`) installs the last published
+release, seeds a ban and a whitelist entry, updates it to the tested image and
+checks that both survive.
 `.github/scripts/previous-release` looks that release up in GHCR: the newest
-stable tag that is not newer than `CATALOG_VERSION` (`PREVIOUS_RELEASE`
-overrides it). Every change to `imageroot/`, `ui/`, `runtime/` or
-`build-images.sh` needs a higher `CATALOG_VERSION`. Validation fails otherwise
+stable tag that is not newer than `CATALOG_VERSION` (`PREVIOUS_IMAGE_URL`
+overrides it).
+
+Both scripts take an NS8 leader node and a module image, and reach the node
+over SSH with `SSH_KEYFILE` (default `~/.ssh/id_ecdsa`):
+
+```bash
+./test-module-install.sh <NODE_ADDR> ghcr.io/platypuschan/fail2ban-reworked:dev
+./test-module-update.sh <NODE_ADDR> ghcr.io/platypuschan/fail2ban-reworked:dev
+```
+
+They install, change and remove a module instance, so use a disposable node.
+
+Every change to `imageroot/`, `ui/`, `runtime/` or `build-images.sh` needs a
+higher `CATALOG_VERSION`. Validation fails otherwise
 (`.github/scripts/check-catalog-version`), and so does the catalog promotion,
 because an existing version tag is never overwritten.
 
