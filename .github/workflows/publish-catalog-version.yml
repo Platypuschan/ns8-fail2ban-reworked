@@ -17,6 +17,9 @@ jobs:
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -57,4 +60,59 @@ jobs:
           skopeo copy --all "docker://$image:dev" "docker://$image:$version"
           skopeo inspect --raw "docker://$image:$version" >/dev/null
           echo "Published $image:$version from tested commit $TESTED_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Create the GitHub release of the published version
+        shell: bash
+        env:
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < CATALOG_VERSION)"
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/fail2ban-reworked"
+          if gh release view "$version" >/dev/null 2>&1; then
+            echo "Release $version already exists."
+            exit 0
+          fi
 
+          command -v skopeo >/dev/null || { sudo apt-get update -qq; sudo apt-get install -y skopeo; }
+          printf '%s' "$GH_TOKEN" | skopeo login --username "$GITHUB_ACTOR" --password-stdin ghcr.io
+          if ! inspect="$(skopeo inspect "docker://$image:$version" 2>&1)"; then
+            if grep -q 'manifest unknown' <<<"$inspect"; then
+              # A newer main commit exists; its run publishes the version.
+              echo "$image:$version is not published yet; no release."
+              exit 0
+            fi
+            echo "$inspect" >&2
+            exit 1
+          fi
+          # The image has no revision label. The version check keeps the image
+          # unchanged since CATALOG_VERSION was set, so tag the commit that set it.
+          revision="$(git log -1 --first-parent --format=%H "$TESTED_SHA" -- CATALOG_VERSION)"
+          if [[ "$(git show "$revision:CATALOG_VERSION" 2>/dev/null | tr -d '[:space:]')" != "$version" ]]; then
+            echo "Commit '$revision' did not set CATALOG_VERSION to $version; no release." >&2
+            exit 1
+          fi
+          if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]] || ! git merge-base --is-ancestor "$revision" "$TESTED_SHA"; then
+            echo "$image:$version has revision '$revision', which is not on main; no release." >&2
+            exit 1
+          fi
+          # An annotated tag is listed twice; its peeled "^{}" line comes last.
+          tag_sha="$(git ls-remote --tags origin "refs/tags/$version" \
+            | awk -v ref="refs/tags/$version" '$2 == ref || $2 == ref "^{}" { sha = $1 } END { print sha }')"
+          if [[ -n "$tag_sha" && "$tag_sha" != "$revision" ]]; then
+            echo "Tag $version points to $tag_sha, but $image:$version was built from $revision." >&2
+            exit 1
+          fi
+
+          args=(--target "$revision" --title "$version" --generate-notes)
+          previous="$(gh release list --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // ""')"
+          if [[ -n "$previous" ]]; then
+            args+=(--notes-start-tag "$previous")
+          fi
+          if [[ "$version" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          # A tag created with GITHUB_TOKEN triggers no workflow, so this does
+          # not rebuild the image.
+          gh release create "$version" "${args[@]}"
+          echo "Created release $version at $revision" >> "$GITHUB_STEP_SUMMARY"
