@@ -85,13 +85,16 @@ jobs:
             echo "$inspect" >&2
             exit 1
           fi
-          # The image has no revision label. The version check keeps the image
-          # unchanged since CATALOG_VERSION was set, so tag the commit that set it.
-          revision="$(git log -1 --first-parent --format=%H "$TESTED_SHA" -- CATALOG_VERSION)"
-          if [[ "$(git show "$revision:CATALOG_VERSION" 2>/dev/null | tr -d '[:space:]')" != "$version" ]]; then
-            echo "Commit '$revision' did not set CATALOG_VERSION to $version; no release." >&2
-            exit 1
+          # The image has no revision label. Tag the tested main commit: the
+          # version check above keeps the image unchanged since CATALOG_VERSION
+          # was set. GITHUB_TOKEN gets HTTP 403 when the tagged commit's
+          # workflow files match no existing ref, as with the older commit
+          # that set the version; the main tip always matches refs/heads/main.
+          if [[ "$(git ls-remote origin refs/heads/main | cut -f1)" != "$TESTED_SHA" ]]; then
+            echo "A newer main commit exists; its run creates the release."
+            exit 0
           fi
+          revision="$TESTED_SHA"
           if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]] || ! git merge-base --is-ancestor "$revision" "$TESTED_SHA"; then
             echo "$image:$version has revision '$revision', which is not on main; no release." >&2
             exit 1
