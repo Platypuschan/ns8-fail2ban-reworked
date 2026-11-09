@@ -1,0 +1,178 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "timezone": "Europe/Berlin",
+  "schedule": [
+    "before 6am on monday"
+  ],
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2,
+  "labels": [
+    "dependencies"
+  ],
+  "vulnerabilityAlerts": {
+    "schedule": [
+      "at any time"
+    ],
+    "minimumReleaseAge": null
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Fail2ban engine source pinned by tag and commit in build-images.sh (clone + rev-parse check) and by the engine image tag",
+      "managerFilePatterns": [
+        "/^build-images\\.sh$/"
+      ],
+      "matchStrings": [
+        "--branch=(?<currentValue>[0-9][0-9.]*) https://github\\.com/fail2ban/fail2ban\\.git[^\\n]*\\ntest [^\\n]* = (?<currentDigest>[0-9a-f]{40})",
+        "fail2ban-engine:(?<currentValue>[0-9][0-9.]*)-\\$\\{revision\\}"
+      ],
+      "depNameTemplate": "fail2ban/fail2ban",
+      "packageNameTemplate": "fail2ban/fail2ban",
+      "datasourceTemplate": "github-tags"
+    },
+    {
+      "customType": "regex",
+      "description": "Fail2ban source checkout used by the CI tests; the comment above ref carries the tag",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/validate\\.yml$/"
+      ],
+      "matchStrings": [
+        "# fail2ban/fail2ban (?<currentValue>[0-9][0-9.]*)\\n\\s*ref: (?<currentDigest>[0-9a-f]{40})"
+      ],
+      "depNameTemplate": "fail2ban/fail2ban",
+      "packageNameTemplate": "fail2ban/fail2ban",
+      "datasourceTemplate": "github-tags"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Fail2ban is the engine of the module and pinned to a reviewed source commit (build-images.sh, CI, README, tests): only on explicit approval via the Dependency Dashboard; version bump, never merged automatically",
+      "matchDepNames": [
+        "fail2ban/fail2ban"
+      ],
+      "commitMessageTopic": "Fail2ban",
+      "dependencyDashboardApproval": true,
+      "automerge": false,
+      "bumpVersions": [
+        {
+          "name": "Raise the module catalog version",
+          "filePatterns": [
+            "CATALOG_VERSION"
+          ],
+          "matchStrings": [
+            "^(?<version>\\d+\\.\\d+\\.\\d+)\\s*$"
+          ],
+          "bumpType": "patch"
+        }
+      ]
+    },
+    {
+      "description": "Python base image of the engine: stay on 3.12 / bookworm, take patch releases automatically after CI",
+      "matchDepNames": [
+        "python",
+        "docker.io/library/python"
+      ],
+      "bumpVersions": [
+        {
+          "name": "Raise the module catalog version",
+          "filePatterns": [
+            "CATALOG_VERSION"
+          ],
+          "matchStrings": [
+            "^(?<version>\\d+\\.\\d+\\.\\d+)\\s*$"
+          ],
+          "bumpType": "patch"
+        }
+      ],
+      "minimumReleaseAge": "3 days"
+    },
+    {
+      "matchDepNames": [
+        "python",
+        "docker.io/library/python"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "major"
+      ],
+      "enabled": false
+    },
+    {
+      "matchDepNames": [
+        "python",
+        "docker.io/library/python"
+      ],
+      "matchUpdateTypes": [
+        "patch",
+        "digest"
+      ],
+      "automerge": true,
+      "automergeType": "pr",
+      "ignoreTests": false
+    },
+    {
+      "description": "Node.js for the UI build (CI); not part of the module image, stay on the current major",
+      "matchDepNames": [
+        "node"
+      ],
+      "groupName": "Node.js"
+    },
+    {
+      "matchDepNames": [
+        "node"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "UI dependencies are part of the module image: one grouped PR, version bump; majors are migrations and stay manual",
+      "matchManagers": [
+        "npm"
+      ],
+      "groupName": "UI dependencies",
+      "bumpVersions": [
+        {
+          "name": "Raise the module catalog version",
+          "filePatterns": [
+            "CATALOG_VERSION"
+          ],
+          "matchStrings": [
+            "^(?<version>\\d+\\.\\d+\\.\\d+)\\s*$"
+          ],
+          "bumpType": "patch"
+        }
+      ]
+    },
+    {
+      "matchManagers": [
+        "npm"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "GitHub Actions do not change the module image",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "description": "Runner images are not updated automatically across majors",
+      "matchDepNames": [
+        "ubuntu"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "enabled": false
+    }
+  ]
+}
