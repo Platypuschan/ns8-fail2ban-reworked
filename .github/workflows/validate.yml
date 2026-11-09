@@ -32,6 +32,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: fail2ban/fail2ban
+          # fail2ban/fail2ban 1.1.1
           ref: f60978618a101427b06924fc932b44350fec2b63
           path: .build/fail2ban
       - name: Registry, parsers, HTTP API and real Fail2ban integration
