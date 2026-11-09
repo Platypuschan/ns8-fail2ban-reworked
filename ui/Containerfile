@@ -1,4 +1,4 @@
-FROM node:24.20.0-bookworm
+FROM node:24.22.2-bookworm
 RUN corepack enable
 WORKDIR /app
 EXPOSE 8080
