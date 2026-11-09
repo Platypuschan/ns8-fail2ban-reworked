@@ -114,11 +114,23 @@
       "ignoreTests": false
     },
     {
-      "description": "Node.js for the UI build (CI); not part of the module image, stay on the current major",
+      "description": "Node.js for the UI build (CI and ui/Containerfile; ui/ is a release path and needs a version bump); stay on the current major",
       "matchDepNames": [
         "node"
       ],
-      "groupName": "Node.js"
+      "groupName": "Node.js",
+      "bumpVersions": [
+        {
+          "name": "Raise the module catalog version",
+          "filePatterns": [
+            "CATALOG_VERSION"
+          ],
+          "matchStrings": [
+            "^(?<version>\\d+\\.\\d+\\.\\d+)\\s*$"
+          ],
+          "bumpType": "patch"
+        }
+      ]
     },
     {
       "matchDepNames": [
